@@ -186,6 +186,43 @@ Board resolution order (highest precedence first):
    boards switch`.
 4. `default`.
 
+### Auditable board rosters
+
+Profiles remain global, isolated Hermes identities under
+`~/.hermes/profiles/`; a board does not copy their folders. A board can instead
+declare which profiles may orchestrate, implement, and review its tasks. The
+roster, policy, and version pins live beside the board DB in `board.json`, so
+they can be inspected and backed up with the board:
+
+```bash
+hermes kanban boards roster-add sellhand-actions sellhand-orchestrator --role orchestrator
+hermes kanban boards roster-add sellhand-actions software-engineer --role worker
+hermes kanban boards roster-add sellhand-actions independent-reviewer --role reviewer
+
+# Opt in to membership enforcement, mandatory review, and immutable pins.
+hermes kanban boards roster sellhand-actions \
+  --strict --require-review --enforce-pins
+
+hermes kanban boards roster sellhand-actions
+hermes kanban boards roster-verify sellhand-actions
+hermes kanban boards roster-remove sellhand-actions software-engineer
+```
+
+Existing boards remain permissive until `--strict` is enabled. With strict
+membership enabled, task creation, assignment, decomposition, review routing,
+and dispatcher spawning reject unlisted profiles. `--require-review` prevents
+an implementation run from completing its own task without entering the review
+lane. `--enforce-pins` also stops dispatch when a profile's distribution version
+or non-secret definition hash differs from the snapshot recorded by
+`roster-add`; `roster-verify` reports missing profiles and drift.
+After an intentional profile upgrade, rerun `roster-add` for that profile to
+review and accept its new version pin.
+
+Each dispatched task run stores immutable provenance in `task_runs`: Hermes
+version and Git commit, profile distribution and definition hash, resolved
+model/provider, and the requested skill versions/hashes. The CLI JSON output,
+dashboard API, and task run drawer expose that snapshot for later audits.
+
 Slugs are validated: lowercase alphanumerics + hyphens + underscores, 1-64
 chars, must start with alphanumeric. Uppercase input is auto-downcased.
 Anything else (slashes, spaces, dots, `..`) is rejected at the CLI layer

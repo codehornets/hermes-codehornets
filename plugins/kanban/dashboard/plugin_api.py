@@ -310,6 +310,9 @@ def get_board(
         tenants = [r["tenant"] for r in conn.execute("SELECT DISTINCT tenant FROM tasks WHERE tenant IS NOT NULL ORDER BY tenant")]
         assignees = [r["assignee"] for r in conn.execute(
             "SELECT DISTINCT assignee FROM tasks WHERE assignee IS NOT NULL AND status != 'archived' ORDER BY assignee")]
+        allowed = kanban_db.roster_allowed_names(kanban_db.read_board_metadata(board))
+        if allowed is not None:  # strict roster: pickers only offer admitted profiles
+            assignees = [name for name in assignees if name in allowed]
         return {
             "columns": [{"name": name, "tasks": columns[name]} for name in columns], "tenants": tenants,
             "assignees": assignees, "latest_event_id": int(latest_event_id), "now": int(time.time())}
@@ -1198,7 +1201,7 @@ def get_assignees(board: Optional[str] = Query(None)):
     """Union of on-disk profiles and assignees used on the board, so a fresh
     profile appears in the picker before it has any task."""
     with _board_conn(board) as (board, conn):
-        return {"assignees": kanban_db.known_assignees(conn)}
+        return {"assignees": kanban_db.known_assignees(conn, board=board)}
 
 
 @router.get("/tasks/{task_id}/log")
@@ -1269,6 +1272,10 @@ class RenameBoardBody(BaseModel):
     # For both fields: ``None`` = leave unchanged; "" = clear; value = validate/resolve + set.
     default_workdir: Optional[str] = None
     project_id: Optional[str] = None
+    # Roster / policy: ``None`` = unchanged. Every rostered profile must exist on
+    # disk and is version-pinned on write (existing pins are kept).
+    roster: Optional[dict[str, Any]] = None
+    policy: Optional[dict[str, Any]] = None
 
 
 # Board transfer exchanges filesystem PATHS, not bytes (same contract as profile export/import):
@@ -1421,9 +1428,25 @@ def rename_board(slug: str, payload: RenameBoardBody):
                 default_workdir = primary_path
         else:
             project_id = ""  # clear the scope
+    profile_pins: Optional[dict[str, Any]] = None
+    if payload.roster is not None:
+        names = kanban_db.roster_names(kanban_db.normalize_board_roster(payload.roster))
+        missing = sorted(names - set(kanban_db.list_profiles_on_disk()))
+        if missing:
+            raise HTTPException(status_code=400, detail=f"profiles do not exist: {', '.join(missing)}")
+        existing_pins = kanban_db.read_board_metadata(normed)["profile_pins"]
+        profile_pins = {name: existing_pins.get(name) or kanban_db.profile_pin(name) for name in sorted(names)}
     meta = kanban_db.write_board_metadata(
-        normed, default_workdir=default_workdir, project_id=project_id, **_board_display_kwargs(payload))
+        normed, default_workdir=default_workdir, project_id=project_id,
+        roster=payload.roster, policy=payload.policy, profile_pins=profile_pins,
+        **_board_display_kwargs(payload))
     return {"board": _annotate_board_meta(meta)}
+
+
+@router.get("/boards/{slug}/roster")
+def get_board_roster(slug: str):
+    """Roster, policy, version pins and the live drift report for a board."""
+    return kanban_db.verify_board_roster(_existing_board_slug(slug))
 
 
 @router.delete("/boards/{slug}")

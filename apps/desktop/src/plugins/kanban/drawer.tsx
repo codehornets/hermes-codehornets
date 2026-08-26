@@ -930,6 +930,18 @@ export function TaskDrawer({
                               {run.error ?? run.summary}
                             </p>
                           )}
+                          {run.provenance && (
+                            <p className="line-clamp-2 font-mono text-[0.65rem] text-(--ui-text-quaternary)">
+                              {String((run.provenance.hermes as { version?: string } | undefined)?.version || 'Hermes')}{' '}
+                              ·{' '}
+                              {String((run.provenance.model as { name?: string } | undefined)?.name || 'profile model')}{' '}
+                              ·{' '}
+                              {String(
+                                (run.provenance.profile as { definition_sha256?: string } | undefined)
+                                  ?.definition_sha256 || ''
+                              ).slice(0, 12)}
+                            </p>
+                          )}
                         </li>
                       )
                     })}

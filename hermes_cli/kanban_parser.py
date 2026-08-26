@@ -110,6 +110,21 @@ _BOARD_SPECS = [
         _SLUG,
         _arg("path", nargs="?", help="Absolute path to use as default workdir. Omit to clear."),
     ], help="Set the default workspace path for tasks on a board"),
+    _cmd("roster", [
+        _SLUG, _json_flag(),
+        _arg("--strict", action=argparse.BooleanOptionalAction, default=None,
+             help="Reject profiles not explicitly listed on the roster"),
+        _arg("--require-review", action=argparse.BooleanOptionalAction, default=None,
+             help="Require implementation runs to enter review before completion"),
+        _arg("--enforce-pins", action=argparse.BooleanOptionalAction, default=None,
+             help="Reject dispatch when a profile definition differs from its pin"),
+    ], help="Show or configure a board's audited profile roster"),
+    _cmd("roster-add", [
+        _SLUG, _arg("profile"),
+        _arg("--role", choices=("orchestrator", "worker", "reviewer"), default="worker"),
+    ], help="Add a profile to a board role and snapshot its version"),
+    _cmd("roster-remove", [_SLUG, _arg("profile")], help="Remove a profile from every role on a board"),
+    _cmd("roster-verify", [_SLUG, _json_flag()], help="Verify profile existence and pinned versions"),
     _cmd("export", [
         _arg("slug", nargs="?", help="Board to export (default: the current board)"),
         _arg("-o", "--output", help="Archive path (default: ./<slug>.tar.gz)"),

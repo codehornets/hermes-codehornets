@@ -12,6 +12,7 @@ locks). Schema: tasks, task_links, task_comments, task_events, task_runs, attach
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import os
 import re
@@ -24,7 +25,7 @@ import time
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Iterable, Optional
+from typing import Any, Iterable, Mapping, Optional
 
 from toolsets import get_toolset_names
 
@@ -232,7 +233,7 @@ _TICK_ACTIVITY_FIELDS = (
     "spawned", "reclaimed", "promoted", "reconciled_orphans", "reaped_terminal_workers", "crashed", "stale",
     "timed_out", "auto_blocked", "rate_limited", "auto_assigned_default",
     "respawn_guarded", "skipped_per_profile_capped", "skipped_unassigned",
-    "skipped_nonspawnable",
+    "skipped_nonspawnable", "skipped_roster",
 )
 
 
@@ -553,6 +554,15 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
         "project_id": None,
         "created_at": None,
         "archived": False,
+        # A missing roster is intentionally permissive for boards created by
+        # older Hermes releases; operators opt into enforcement explicitly.
+        "roster": {"orchestrator": None, "workers": [], "reviewers": []},
+        "policy": {
+            "allow_unlisted_profiles": True,
+            "require_review": False,
+            "enforce_profile_pins": False,
+        },
+        "profile_pins": {},
     }
     try:
         p = board_metadata_path(slug)
@@ -565,18 +575,195 @@ def read_board_metadata(board: Optional[str] = None) -> dict:
                 meta.update(raw)
     except (OSError, json.JSONDecodeError):
         pass
+    meta["roster"] = normalize_board_roster(meta.get("roster"))
+    meta["policy"] = normalize_board_policy(meta.get("policy"))
+    if not isinstance(meta.get("profile_pins"), dict):
+        meta["profile_pins"] = {}
     meta["db_path"] = str(kanban_db_path(slug))
     return meta
+
+
+# --- Board rosters: audited profile membership, policy gates and version pins ---
+
+def normalize_board_roster(value: Any) -> dict[str, Any]:
+    """Stable ``{"orchestrator", "workers", "reviewers"}`` shape from untrusted ``board.json``."""
+    raw = value if isinstance(value, dict) else {}
+
+    def _names(key: str) -> list[str]:
+        values = raw.get(key, [])
+        if not isinstance(values, list):
+            return []
+        result: list[str] = []
+        for item in values:
+            try:
+                name = _canonical_assignee(str(item))
+            except (TypeError, ValueError):
+                continue
+            if name and name not in result:
+                result.append(name)
+        return result
+
+    orchestrator = raw.get("orchestrator")
+    try:
+        orchestrator = _canonical_assignee(str(orchestrator)) if orchestrator else None
+    except (TypeError, ValueError):
+        orchestrator = None
+    return {"orchestrator": orchestrator, "workers": _names("workers"), "reviewers": _names("reviewers")}
+
+
+def normalize_board_policy(value: Any) -> dict[str, bool]:
+    raw = value if isinstance(value, dict) else {}
+    return {
+        "allow_unlisted_profiles": bool(raw.get("allow_unlisted_profiles", True)),
+        "require_review": bool(raw.get("require_review", False)),
+        "enforce_profile_pins": bool(raw.get("enforce_profile_pins", False)),
+    }
+
+
+def roster_names(roster: Mapping[str, Any]) -> set[str]:
+    """Every profile a normalised roster names, whatever the role."""
+    names = set(roster["workers"]) | set(roster["reviewers"])
+    if roster["orchestrator"]:
+        names.add(roster["orchestrator"])
+    return names
+
+
+def roster_members(meta: Mapping[str, Any], *, role: str = "worker") -> set[str]:
+    """Profiles the board roster admits for ``role``; the orchestrator may also do worker lanes."""
+    roster = meta["roster"]
+    if role == "orchestrator":
+        return {roster["orchestrator"]} if roster["orchestrator"] else set()
+    allowed = set(roster["reviewers"] if role == "reviewer" else roster["workers"])
+    if role == "worker" and roster["orchestrator"]:
+        allowed.add(roster["orchestrator"])
+    return allowed
+
+
+def roster_allowed_names(meta: Mapping[str, Any]) -> Optional[set[str]]:
+    """Every admitted profile on a strict board, or ``None`` when unlisted profiles are allowed."""
+    return None if meta["policy"]["allow_unlisted_profiles"] else roster_names(meta["roster"])
+
+
+def profile_provenance(profile: str, *, skills: Iterable[str] = ()) -> dict[str, Any]:
+    """Snapshot the executable profile definition without reading secrets: Hermes
+    version + commit, the profile's definition digest and distribution, its model,
+    and the version/digest of each skill the task loads."""
+    from hermes_cli import __version__
+    from hermes_cli.profiles import _read_config_model, _read_distribution_meta, get_profile_dir
+
+    name = _canonical_assignee(profile) or profile
+    profile_dir = get_profile_dir(name)
+    model, provider = _read_config_model(profile_dir)
+    dist_name, dist_version, dist_source = _read_distribution_meta(profile_dir)
+    digest = hashlib.sha256()
+    for filename in ("SOUL.md", "config.yaml", "distribution.yaml", "profile.yaml"):
+        path = profile_dir / filename
+        if path.is_file():
+            digest.update(filename.encode())
+            digest.update(path.read_bytes())
+    skill_versions: list[dict[str, str]] = []
+    repo = Path(__file__).resolve().parents[1]
+    for skill in sorted({str(s).strip() for s in skills if str(s).strip()}):
+        candidates = [profile_dir / "skills" / skill / "SKILL.md", repo / "skills" / skill / "SKILL.md"]
+        candidates.extend((repo / "skills").glob(f"*/{skill}/SKILL.md"))
+        skill_path = next((path for path in candidates if path.is_file()), None)
+        entry: dict[str, str] = {"name": skill}
+        if skill_path is not None:
+            content = skill_path.read_bytes()
+            entry["sha256"] = hashlib.sha256(content).hexdigest()
+            match = re.search(rb"(?m)^version:\s*['\"]?([^'\"\r\n]+)", content)
+            if match:
+                entry["version"] = match.group(1).decode("utf-8", "replace").strip()
+        skill_versions.append(entry)
+    core_commit = _git_out(repo, "rev-parse", "HEAD", timeout=2)
+    return {
+        "hermes": {"version": __version__, "commit": core_commit or None},
+        "profile": {
+            "name": name,
+            "definition_sha256": digest.hexdigest(),
+            "distribution": {"name": dist_name, "version": dist_version, "source": dist_source},
+        },
+        "model": {"name": model, "provider": provider},
+        "skills": skill_versions,
+    }
+
+
+def profile_pin(profile: str) -> dict[str, Any]:
+    """The two provenance fields a board pins a profile at (drift = either differs)."""
+    snapshot = profile_provenance(profile)
+    return {
+        "distribution_version": snapshot["profile"]["distribution"]["version"],
+        "definition_sha256": snapshot["profile"]["definition_sha256"],
+    }
+
+
+def board_profile_allowed(
+    profile: Optional[str], *, role: str = "worker", board: Optional[str] = None,
+) -> tuple[bool, str]:
+    """``(ok, reason)`` for board membership plus the optional immutable profile pin."""
+    if not profile:
+        return True, "unassigned"
+    name = _canonical_assignee(profile)
+    meta = read_board_metadata(board or get_current_board())
+    policy = meta["policy"]
+    if not policy["allow_unlisted_profiles"] and name not in roster_members(meta, role=role):
+        return False, f"profile {name!r} is not in the board {role} roster"
+    if policy["enforce_profile_pins"]:
+        expected = meta["profile_pins"].get(name)
+        if not isinstance(expected, dict):
+            return False, f"profile {name!r} has no board version pin"
+        current = profile_pin(name)
+        drift = [k for k in ("distribution_version", "definition_sha256") if expected.get(k) != current.get(k)]
+        if drift:
+            return False, f"profile {name!r} drifted from its board pin ({', '.join(drift)})"
+    return True, "allowed"
+
+
+def assert_board_profile_allowed(
+    profile: Optional[str], *, role: str = "worker", board: Optional[str] = None,
+) -> None:
+    ok, reason = board_profile_allowed(profile, role=role, board=board)
+    if not ok:
+        raise ValueError(reason)
+
+
+def verify_board_roster(board: Optional[str] = None) -> dict[str, Any]:
+    """Roster, policy, and per-profile ``exists``/``pin``/``current``/``drifted`` with the issues list."""
+    slug = _normalize_board_slug(board) or get_current_board()
+    meta = read_board_metadata(slug)
+    available = set(list_profiles_on_disk())
+    profiles = []
+    for name in sorted(roster_names(meta["roster"])):
+        current = profile_pin(name) if name in available else None
+        expected = meta["profile_pins"].get(name)
+        profiles.append({
+            "name": name, "exists": name in available, "pin": expected, "current": current,
+            "drifted": bool(expected and current and expected != current),
+        })
+    issues = []
+    if not meta["policy"]["allow_unlisted_profiles"] and not profiles:
+        issues.append("strict roster is empty")
+    if meta["policy"]["require_review"] and not meta["roster"]["reviewers"]:
+        issues.append("review is required but the reviewer roster is empty")
+    issues.extend(f"profile {p['name']!r} does not exist" for p in profiles if not p["exists"])
+    issues.extend(f"profile {p['name']!r} has version drift" for p in profiles if p["drifted"])
+    return {
+        "board": slug, "roster": meta["roster"], "policy": meta["policy"],
+        "profiles": profiles, "issues": issues, "ok": not issues,
+    }
 
 
 def write_board_metadata(
     board: Optional[str], *, name: Optional[str] = None, description: Optional[str] = None,
     icon: Optional[str] = None, color: Optional[str] = None, archived: Optional[bool] = None,
     default_workdir: Optional[str] = None, project_id: Optional[str] = None,
+    roster: Optional[Mapping[str, Any]] = None, policy: Optional[Mapping[str, Any]] = None,
+    profile_pins: Optional[Mapping[str, Any]] = None,
 ) -> dict:
     """Create/update ``board.json``; unmentioned fields are preserved, ``created_at``
     set on first write. ``project_id``/``default_workdir``: ``None`` = unchanged,
-    "" = clear (``project_id`` is not validated here)."""
+    "" = clear (``project_id`` is not validated here). ``roster``/``policy`` are
+    normalised on write; ``profile_pins`` replaces the pin map wholesale."""
     _assert_not_delegated_child_mutation()
     slug = _slug_or_default(board)
     meta = read_board_metadata(slug)
@@ -592,6 +779,12 @@ def write_board_metadata(
     for key, value in (("default_workdir", default_workdir), ("project_id", project_id)):
         if value is not None:
             meta[key] = str(value) if value else None
+    if roster is not None:
+        meta["roster"] = normalize_board_roster(roster)
+    if policy is not None:
+        meta["policy"] = normalize_board_policy(policy)
+    if profile_pins is not None:
+        meta["profile_pins"] = dict(profile_pins)
     if not meta.get("created_at"):
         meta["created_at"] = int(time.time())
     path = board_metadata_path(slug)
@@ -784,6 +977,9 @@ class Run:
     outcome: Optional[str]
     summary: Optional[str]
     metadata: Optional[dict]
+    provenance: Optional[dict]
+    """Profile/model/skill snapshot captured when the run was claimed
+    (:func:`set_active_run_provenance`); ``None`` on legacy rows."""
     error: Optional[str]
 
     @classmethod
@@ -799,6 +995,7 @@ class Run:
             started_at=int(row["started_at"]),
             ended_at=_opt_int(row["ended_at"]),
             metadata=_json_or(_lossy_text(row["metadata"])),
+            provenance=_json_or(_lossy_text(_row_get(row, "provenance"))),
         )
 
 
@@ -1016,6 +1213,9 @@ CREATE TABLE IF NOT EXISTS task_runs (
     --          gave_up | reclaimed | (null while still running)
     summary             TEXT,
     metadata            TEXT,
+    -- JSON snapshot of the profile/model/skills the claimed worker runs with
+    -- (board roster provenance); NULL = legacy row.
+    provenance          TEXT,
     error               TEXT
 );
 
@@ -1277,6 +1477,7 @@ def create_task(
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     assignee = _canonical_assignee(assignee)
+    assert_board_profile_allowed(assignee, role="worker", board=board)
     if not title or not title.strip():
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:
@@ -1538,8 +1739,12 @@ def list_tasks(
 
 
 def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) -> bool:
-    """Assign/reassign; raises RuntimeError while the task is running under a claim."""
+    """Assign/reassign; raises RuntimeError while the task is running under a claim,
+    ValueError when the board roster rejects ``profile`` for the task's current lane."""
     profile = _canonical_assignee(profile)
+    status = _task_status(conn, task_id)
+    if status is not None:
+        assert_board_profile_allowed(profile, role="reviewer" if status == "review" else "worker")
     with write_txn(conn):
         row = conn.execute(
             "SELECT status, claim_lock, assignee FROM tasks WHERE id = ?", (task_id,)
@@ -2203,6 +2408,13 @@ def _claim_and_open_run(
     return run_id
 
 
+def _assert_claim_roster(conn: sqlite3.Connection, task_id: str, *, role: str) -> None:
+    """Roster gate before a claim: the card's current assignee must be admitted for ``role``."""
+    row = conn.execute("SELECT assignee FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is not None:
+        assert_board_profile_allowed(row["assignee"], role=role)
+
+
 def claim_task(
     conn: sqlite3.Connection, task_id: str, *, ttl_seconds: Optional[int] = None,
     claimer: Optional[str] = None,
@@ -2210,8 +2422,10 @@ def claim_task(
     """Atomically transition ``ready -> running``.
 
     Returns the claimed ``Task`` on success, ``None`` if the task was
-    already claimed (or is not in ``ready`` status).
+    already claimed (or is not in ``ready`` status). Raises ``ValueError``
+    when the board roster rejects the assignee.
     """
+    _assert_claim_roster(conn, task_id, role="worker")
     now = int(time.time())
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
@@ -2234,6 +2448,7 @@ def claim_task(
         if run_id is None:
             return None
         claimed = get_task(conn, task_id)
+    set_active_run_provenance(conn, claimed)
     _fire_task_hook("kanban_task_claimed", claimed, task_id, run_id)
     return claimed
 
@@ -2245,6 +2460,7 @@ def claim_review_task(
     """Atomic ``review -> running`` (None when lost). Parents are re-checked
     (one may have reopened meanwhile) and a NEW run tracks the reviewer
     separately from the implementer."""
+    _assert_claim_roster(conn, task_id, role="reviewer")
     now = int(time.time())
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
@@ -2265,7 +2481,9 @@ def claim_review_task(
         )
         if run_id is None:
             return None
-        return get_task(conn, task_id)
+        claimed = get_task(conn, task_id)
+    set_active_run_provenance(conn, claimed)
+    return claimed
 
 
 def _retry_status_for_run(
@@ -2651,6 +2869,20 @@ def _claim_is_live(trow) -> bool:
     )
 
 
+def _assert_review_handoff(conn: sqlite3.Connection, task_id: str, expected_run_id: Optional[int]) -> None:
+    """``require_review`` boards need an auditable handoff: manual approval of a card
+    parked in ``review`` stays valid, as does completion by a run claimed from that
+    lane; an implementation worker cannot jump from its running attempt to ``done``."""
+    status = _task_status(conn, task_id)
+    if status is None or status == "review":
+        return
+    if expected_run_id is not None:
+        claimed = _latest_event(conn, task_id, "claimed", int(expected_run_id))
+        if _json_dict(_row_get(claimed, "payload")).get("source_status") == "review":
+            return
+    raise ValueError("this board requires review; call request_review before completing the task")
+
+
 def complete_task(
     conn: sqlite3.Connection, task_id: str, *, result: Optional[str] = None,
     summary: Optional[str] = None, metadata: Optional[dict] = None,
@@ -2671,6 +2903,8 @@ def complete_task(
     prose is scanned for unresolvable ``t_<hex>`` refs (advisory event only).
     """
     now = int(time.time())
+    if read_board_metadata(get_current_board())["policy"]["require_review"]:
+        _assert_review_handoff(conn, task_id, expected_run_id)
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
         return False
@@ -3215,7 +3449,17 @@ def request_review(
                         "latest changes_requested event is missing or "
                         "malformed); pass reviewer= explicitly",
                     )
+            if reviewer is None:
+                # Strict boards route reviews to the roster's first reviewer; a
+                # strict board with no reviewer cannot hand off at all.
+                board_meta = read_board_metadata(get_current_board())
+                if board_meta["roster"]["reviewers"]:
+                    reviewer = board_meta["roster"]["reviewers"][0]
+                elif not board_meta["policy"]["allow_unlisted_profiles"]:
+                    return _ret(False, "strict board has no reviewer configured")
             reviewer = _canonical_assignee(reviewer)
+            if reviewer is not None:
+                assert_board_profile_allowed(reviewer, role="reviewer")
             assignee_sql = ", assignee = ?" if reviewer is not None else ""
             run_guard = "" if expected_run_id is None else " AND current_run_id = ?"
             params: tuple[Any, ...] = (
@@ -4144,14 +4388,19 @@ def list_profiles_on_disk() -> list[str]:
     return sorted(names)
 
 
-def known_assignees(conn: sqlite3.Connection) -> list[dict]:
+def known_assignees(conn: sqlite3.Connection, *, board: Optional[str] = None) -> list[dict]:
     """``{"name", "on_disk", "counts"}`` for every on-disk profile or task
-    assignee, so a fresh profile appears in pickers before it has a task."""
+    assignee, so a fresh profile appears in pickers before it has a task. A
+    strict roster narrows the list to the profiles the board admits."""
     on_disk = set(list_profiles_on_disk())
     counts = _counts_by_assignee(conn)
+    names = on_disk | set(counts)
+    allowed = roster_allowed_names(read_board_metadata(board or get_current_board()))
+    if allowed is not None:
+        names &= allowed
     return [
         {"name": name, "on_disk": name in on_disk, "counts": counts.get(name, {})}
-        for name in sorted(on_disk | set(counts))
+        for name in sorted(names)
     ]
 
 
@@ -4191,6 +4440,23 @@ def latest_run(conn: sqlite3.Connection, task_id: str) -> Optional[Run]:
         "ORDER BY started_at DESC, id DESC LIMIT 1", (task_id,),
     ).fetchone()
     return Run.from_row(row) if row else None
+
+
+def set_active_run_provenance(conn: sqlite3.Connection, task: Optional[Task]) -> Optional[dict]:
+    """Persist the exact profile/model/skill snapshot the active run executes with."""
+    if task is None or not task.current_run_id or not task.assignee:
+        return None
+    snapshot = profile_provenance(task.assignee, skills=task.skills or ())
+    if task.model_override:
+        snapshot["model"] = {
+            "name": task.model_override, "provider": task.provider_override, "source": "task_override",
+        }
+    with write_txn(conn):
+        conn.execute(
+            "UPDATE task_runs SET provenance = ? WHERE id = ? AND ended_at IS NULL",
+            (json.dumps(snapshot, sort_keys=True), int(task.current_run_id)),
+        )
+    return snapshot
 
 
 def latest_summary(conn: sqlite3.Connection, task_id: str) -> Optional[str]:

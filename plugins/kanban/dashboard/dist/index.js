@@ -2324,8 +2324,22 @@
     const [name, setName] = useState(b.name || "");
     const [description, setDescription] = useState(b.description || "");
     const [projectDirectory, setProjectDirectory] = useState(b.default_workdir || "");
+    const [orchestrator, setOrchestrator] = useState((b.roster && b.roster.orchestrator) || "");
+    const [workers, setWorkers] = useState(((b.roster && b.roster.workers) || []).join(", "));
+    const [reviewers, setReviewers] = useState(((b.roster && b.roster.reviewers) || []).join(", "));
+    const [strictRoster, setStrictRoster] = useState(!!(b.policy && b.policy.allow_unlisted_profiles === false));
+    const [requireReview, setRequireReview] = useState(!!(b.policy && b.policy.require_review));
+    const [enforcePins, setEnforcePins] = useState(!!(b.policy && b.policy.enforce_profile_pins));
+    const [rosterAudit, setRosterAudit] = useState(null);
     const [submitting, setSubmitting] = useState(false);
     const [err, setErr] = useState(null);
+
+    useEffect(function () {
+      if (!b.slug) return;
+      SDK.fetchJSON(`${API}/boards/${encodeURIComponent(b.slug)}/roster`)
+        .then(setRosterAudit)
+        .catch(function () { setRosterAudit(null); });
+    }, [b.slug]);
 
     function onSubmit(ev) {
       if (ev) ev.preventDefault();
@@ -2337,6 +2351,16 @@
         name: name.trim() || undefined,
         description: description.trim() || undefined,
         default_workdir: projectDirectory.trim(),
+        roster: {
+          orchestrator: orchestrator.trim() || null,
+          workers: workers.split(",").map(function (v) { return v.trim(); }).filter(Boolean),
+          reviewers: reviewers.split(",").map(function (v) { return v.trim(); }).filter(Boolean),
+        },
+        policy: {
+          allow_unlisted_profiles: !strictRoster,
+          require_review: requireReview,
+          enforce_profile_pins: enforcePins,
+        },
       }).catch(function (e) {
         setErr(parseApiErrorMessage(e));
         setSubmitting(false);
@@ -2391,6 +2415,61 @@
               tx(t, "projectDirectoryOverrideHint",
                 "New tasks inherit this as their workspace default; each task can still override it in the create dialog.")),
           ),
+          h("div", { className: "flex flex-col gap-1" },
+            h(Label, { className: "text-xs" }, "Orchestrator profile"),
+            h(Input, {
+              value: orchestrator,
+              onChange: function (e) { setOrchestrator(e.target.value); },
+              className: "h-8",
+            }),
+          ),
+          h("div", { className: "flex flex-col gap-1" },
+            h(Label, { className: "text-xs" }, "Worker profiles"),
+            h(Input, {
+              value: workers,
+              onChange: function (e) { setWorkers(e.target.value); },
+              placeholder: "software-engineer, content-producer",
+              className: "h-8",
+            }),
+          ),
+          h("div", { className: "flex flex-col gap-1" },
+            h(Label, { className: "text-xs" }, "Reviewer profiles"),
+            h(Input, {
+              value: reviewers,
+              onChange: function (e) { setReviewers(e.target.value); },
+              placeholder: "independent-reviewer",
+              className: "h-8",
+            }),
+          ),
+          h("label", { className: "flex items-center gap-2 text-xs" },
+            h(Checkbox, { checked: strictRoster, onCheckedChange: function (v) { setStrictRoster(v === true); } }),
+            "Reject profiles outside this roster",
+          ),
+          h("label", { className: "flex items-center gap-2 text-xs" },
+            h(Checkbox, { checked: requireReview, onCheckedChange: function (v) { setRequireReview(v === true); } }),
+            "Require review before completion",
+          ),
+          h("label", { className: "flex items-center gap-2 text-xs" },
+            h(Checkbox, { checked: enforcePins, onCheckedChange: function (v) { setEnforcePins(v === true); } }),
+            "Block dispatch when profile versions drift",
+          ),
+          rosterAudit ? h("div", { className: "rounded border p-2 text-xs text-muted-foreground" },
+            h("div", { className: "font-medium" },
+              "Version audit: " + (rosterAudit.ok ? "verified" : "attention required")),
+            (rosterAudit.profiles || []).map(function (profile) {
+              const current = profile.current || {};
+              return h("div", { key: profile.name, className: "flex gap-2" },
+                h("span", null, profile.name),
+                h("span", { className: "ml-auto font-mono" },
+                  (current.distribution_version || "local") + " · " +
+                  (current.definition_sha256 || "").slice(0, 12)),
+                profile.drifted ? h("span", { className: "text-destructive" }, "drift") : null,
+              );
+            }),
+            (rosterAudit.issues || []).map(function (issue) {
+              return h("div", { key: issue, className: "text-destructive" }, issue);
+            }),
+          ) : null,
         ),
         err ? h("div", { className: "text-xs text-destructive mt-2" }, err) : null,
         h("div", { className: "hermes-kanban-dialog-actions" },
@@ -4143,6 +4222,13 @@
                   h("code", { className: "hermes-kanban-run-meta" }, json),
                 );
               })()
+            : null,
+          (r.provenance && Object.keys(r.provenance).length > 0)
+            ? h("details", { className: "hermes-kanban-run-meta-block" },
+                h("summary", { className: "hermes-kanban-run-meta-label" }, "Agent provenance"),
+                h("code", { className: "hermes-kanban-run-meta" },
+                  JSON.stringify(r.provenance, null, 2)),
+              )
             : null,
         );
       }),

@@ -201,6 +201,89 @@ def _cmd_boards_import(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_boards_roster(args: argparse.Namespace) -> int:
+    normed, rc = _board_slug_arg(args, "roster", must_exist=True)
+    if rc:
+        return rc
+    updates = {
+        "allow_unlisted_profiles": None if args.strict is None else not args.strict,
+        "require_review": args.require_review,
+        "enforce_profile_pins": args.enforce_pins,
+    }
+    changed = {key: value for key, value in updates.items() if value is not None}
+    if changed:
+        kb.write_board_metadata(normed, policy={**kb.read_board_metadata(normed)["policy"], **changed})
+    report = kb.verify_board_roster(normed)
+    if _json_out(args, report):
+        return 0
+    roster, policy = report["roster"], report["policy"]
+    print(f"Board {normed!r} roster\n"
+          f"  Orchestrator: {roster['orchestrator'] or '(none)'}\n"
+          f"  Workers:      {', '.join(roster['workers']) or '(none)'}\n"
+          f"  Reviewers:    {', '.join(roster['reviewers']) or '(none)'}\n"
+          f"  Strict:       {not policy['allow_unlisted_profiles']}\n"
+          f"  Review gate:  {policy['require_review']}\n"
+          f"  Enforce pins: {policy['enforce_profile_pins']}")
+    for issue in report["issues"]:
+        print(f"  ! {issue}")
+    return 0
+
+
+def _cmd_boards_roster_add(args: argparse.Namespace) -> int:
+    normed, rc = _board_slug_arg(args, "roster-add", must_exist=True)
+    if rc:
+        return rc
+    from hermes_cli.profiles import normalize_profile_name, profile_exists
+
+    profile = normalize_profile_name(args.profile)
+    if not profile_exists(profile):
+        return _err(f"kanban boards roster-add: profile {profile!r} does not exist")
+    meta = kb.read_board_metadata(normed)
+    roster = {**meta["roster"], "workers": list(meta["roster"]["workers"]),
+              "reviewers": list(meta["roster"]["reviewers"])}
+    if args.role == "orchestrator":
+        roster["orchestrator"] = profile
+    elif profile not in roster[f"{args.role}s"]:
+        roster[f"{args.role}s"].append(profile)
+    pins = {**meta["profile_pins"], profile: kb.profile_pin(profile)}
+    kb.write_board_metadata(normed, roster=roster, profile_pins=pins)
+    print(f"Added {profile!r} as {args.role} on board {normed!r}; version pin recorded.")
+    return 0
+
+
+def _cmd_boards_roster_remove(args: argparse.Namespace) -> int:
+    normed, rc = _board_slug_arg(args, "roster-remove", must_exist=True)
+    if rc:
+        return rc
+    profile = kb._canonical_assignee(args.profile)
+    meta = kb.read_board_metadata(normed)
+    roster = {
+        "orchestrator": None if meta["roster"]["orchestrator"] == profile else meta["roster"]["orchestrator"],
+        "workers": [name for name in meta["roster"]["workers"] if name != profile],
+        "reviewers": [name for name in meta["roster"]["reviewers"] if name != profile],
+    }
+    pins = {name: pin for name, pin in meta["profile_pins"].items() if name != profile}
+    kb.write_board_metadata(normed, roster=roster, profile_pins=pins)
+    print(f"Removed {profile!r} from board {normed!r}.")
+    return 0
+
+
+def _cmd_boards_roster_verify(args: argparse.Namespace) -> int:
+    normed, rc = _board_slug_arg(args, "roster-verify", must_exist=True)
+    if rc:
+        return rc
+    report = kb.verify_board_roster(normed)
+    if _json_out(args, report):
+        return 0 if report["ok"] else 1
+    if report["ok"]:
+        print(f"Board {normed!r} roster is valid; {len(report['profiles'])} profile(s) verified.")
+        return 0
+    print(f"Board {normed!r} roster has {len(report['issues'])} issue(s):")
+    for issue in report["issues"]:
+        print(f"  - {issue}")
+    return 1
+
+
 _BOARD_HANDLERS = {
     "list": _cmd_boards_list, "ls": _cmd_boards_list,
     "create": _cmd_boards_create, "new": _cmd_boards_create,
@@ -209,6 +292,10 @@ _BOARD_HANDLERS = {
     "show": _cmd_boards_show, "current": _cmd_boards_show,
     "rename": _cmd_boards_rename,
     "set-default-workdir": _cmd_boards_set_default_workdir,
+    "roster": _cmd_boards_roster,
+    "roster-add": _cmd_boards_roster_add,
+    "roster-remove": _cmd_boards_roster_remove,
+    "roster-verify": _cmd_boards_roster_verify,
     "export": _cmd_boards_export,
     "import": _cmd_boards_import,
 }

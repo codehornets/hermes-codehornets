@@ -66,6 +66,7 @@ export interface KanbanRun {
   summary?: null | string
   error?: null | string
   metadata?: null | Record<string, unknown> | string
+  provenance?: null | Record<string, unknown>
   worker_pid?: null | number
   started_at?: null | number
   ended_at?: null | number
@@ -140,6 +141,32 @@ export interface BoardMeta {
   /** First-class Project the board is scoped to (id) + resolved name. */
   project_id?: null | string
   project_name?: null | string
+  roster?: {
+    orchestrator?: null | string
+    workers: string[]
+    reviewers: string[]
+  }
+  policy?: {
+    allow_unlisted_profiles: boolean
+    require_review: boolean
+    enforce_profile_pins: boolean
+  }
+  profile_pins?: Record<string, { distribution_version?: null | string; definition_sha256?: string }>
+}
+
+export interface BoardRosterReport {
+  board: string
+  ok: boolean
+  issues: string[]
+  roster: NonNullable<BoardMeta['roster']>
+  policy: NonNullable<BoardMeta['policy']>
+  profiles: Array<{
+    name: string
+    exists: boolean
+    drifted: boolean
+    pin?: null | { distribution_version?: null | string; definition_sha256?: string }
+    current?: null | { distribution_version?: null | string; definition_sha256?: string }
+  }>
 }
 
 /** POST /boards/{slug}/export — the archive the backend wrote. */

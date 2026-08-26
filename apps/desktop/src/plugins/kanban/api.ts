@@ -24,6 +24,7 @@ import type {
   BoardExportResult,
   BoardImportResult,
   BoardMeta,
+  BoardRosterReport,
   BoardsResponse,
   KanbanBoard,
   KanbanProfile,
@@ -281,6 +282,8 @@ export const exportBoard = (slug: string, output: string) =>
 
 export const importBoard = (archive: string) =>
   call<BoardImportResult>('/boards/import', { method: 'POST', body: { archive } })
+
+export const fetchBoardRoster = (slug: string) => call<BoardRosterReport>(`/boards/${encodeURIComponent(slug)}/roster`)
 
 export const nudgeDispatcher = () => call<{ spawned?: unknown[] }>(withBoard('/dispatch'), { method: 'POST', body: {} })
 

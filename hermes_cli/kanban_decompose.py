@@ -130,7 +130,16 @@ def _resolve_profile_from_cfg(cfg: dict, key: str) -> str:
     """``kanban.<key>`` if it names an existing profile, else the active
     default profile — so a task is never stranded for lack of an owner.
     ``orchestrator_profile`` owns the root after fan-out; ``default_assignee``
-    catches children the decomposer can't route."""
+    catches children the decomposer can't route. A board roster wins over
+    config: its orchestrator owns the root, and on a strict board its first
+    worker is the fallback assignee."""
+    board_meta = kb.read_board_metadata(kb.get_current_board())
+    if key == "orchestrator_profile" and board_meta["roster"]["orchestrator"]:
+        return board_meta["roster"]["orchestrator"]
+    if key == "default_assignee" and not board_meta["policy"]["allow_unlisted_profiles"]:
+        workers = board_meta["roster"]["workers"]
+        if workers:
+            return workers[0]
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     explicit = (kanban_cfg.get(key) or "").strip()
     if explicit:
@@ -147,12 +156,17 @@ def _resolve_profile_from_cfg(cfg: dict, key: str) -> str:
 
 def _build_roster() -> tuple[list[dict], set[str]]:
     """``(roster_for_prompt, valid_assignee_names)``; entries are
-    ``{name, description, has_description}``."""
+    ``{name, description, has_description}``. A strict board roster narrows
+    both to the profiles admitted as workers (or orchestrator)."""
     try:
         all_profiles = profiles_mod.list_profiles()
     except Exception as exc:
         logger.warning("decompose: failed to list profiles: %s", exc)
         return [], set()
+    board_meta = kb.read_board_metadata(kb.get_current_board())
+    if not board_meta["policy"]["allow_unlisted_profiles"]:
+        admitted = kb.roster_members(board_meta, role="worker")
+        all_profiles = [p for p in all_profiles if p.name in admitted]
     roster = []
     for p in all_profiles:
         desc = (p.description or "").strip()

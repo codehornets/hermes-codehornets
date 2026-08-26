@@ -38,6 +38,7 @@ import {
   BOARDS_KEY,
   createBoard,
   deleteBoard,
+  fetchBoardRoster,
   fetchBoards,
   fetchProjects,
   pluginOs,
@@ -248,20 +249,65 @@ function RenameBoardDialog({ board, onClose }: { board: BoardMeta | null; onClos
 
 function BoardSettingsDialog({ board, onClose }: { board: BoardMeta | null; onClose: () => void }) {
   const k = useKanban()
+  const qc = useQueryClient()
   const [project, setProject] = useState('')
+  const [orchestrator, setOrchestrator] = useState('')
+  const [workers, setWorkers] = useState('')
+  const [reviewers, setReviewers] = useState('')
+  const [strict, setStrict] = useState(false)
+  const [requireReview, setRequireReview] = useState(false)
+  const [enforcePins, setEnforcePins] = useState(false)
   // Null while closed — see RenameBoardDialog on why this can't live inside
   // the mutation callback.
   const slug = board?.slug ?? ''
 
+  const { data: audit } = useQuery({
+    enabled: Boolean(board),
+    queryFn: () => fetchBoardRoster(slug),
+    queryKey: ['kanban', 'board-roster', slug],
+    staleTime: 15_000
+  })
+
   useEffect(() => {
     if (board) {
       setProject(board.project_id || '')
+      setOrchestrator(board.roster?.orchestrator || '')
+      setWorkers((board.roster?.workers || []).join(', '))
+      setReviewers((board.roster?.reviewers || []).join(', '))
+      setStrict(board.policy?.allow_unlisted_profiles === false)
+      setRequireReview(board.policy?.require_review === true)
+      setEnforcePins(board.policy?.enforce_profile_pins === true)
     }
   }, [board])
 
-  // The name lives in the rename dialog; '' clears the scope, which also
-  // drops the mirrored default_workdir on the backend.
-  const save = useBoardWrite(() => updateBoard(slug, { project_id: project }), onClose)
+  // The name lives in the rename dialog. An empty project clears the scope
+  // and its mirrored default_workdir; roster policy stays board-scoped.
+  const save = useBoardWrite(
+    () =>
+      updateBoard(slug, {
+        project_id: project,
+        roster: {
+          orchestrator: orchestrator.trim() || null,
+          workers: workers
+            .split(',')
+            .map(value => value.trim())
+            .filter(Boolean),
+          reviewers: reviewers
+            .split(',')
+            .map(value => value.trim())
+            .filter(Boolean)
+        },
+        policy: {
+          allow_unlisted_profiles: !strict,
+          require_review: requireReview,
+          enforce_profile_pins: enforcePins
+        }
+      }),
+    () => {
+      void qc.invalidateQueries({ queryKey: ['kanban', 'board-roster', slug] })
+      onClose()
+    }
+  )
 
   return (
     <BoardDialog
@@ -273,6 +319,63 @@ function BoardSettingsDialog({ board, onClose }: { board: BoardMeta | null; onCl
       title={board ? k.boardSettingsFor(board.name || board.slug) : k.settingsDots}
     >
       <ProjectPicker onChange={setProject} value={project} />
+      <label className="flex flex-col gap-1">
+        <span className={FIELD_LABEL}>Orchestrator profile</span>
+        <Input
+          onChange={event => setOrchestrator(event.target.value)}
+          placeholder="sellhand-orchestrator"
+          value={orchestrator}
+        />
+      </label>
+      <label className="flex flex-col gap-1">
+        <span className={FIELD_LABEL}>Worker profiles</span>
+        <Input
+          onChange={event => setWorkers(event.target.value)}
+          placeholder="software-engineer, content-producer"
+          value={workers}
+        />
+        <span className="text-[0.6875rem] text-(--ui-text-quaternary)">Comma-separated profile names.</span>
+      </label>
+      <label className="flex flex-col gap-1">
+        <span className={FIELD_LABEL}>Reviewer profiles</span>
+        <Input
+          onChange={event => setReviewers(event.target.value)}
+          placeholder="independent-reviewer"
+          value={reviewers}
+        />
+      </label>
+      <label className="flex items-center gap-2 text-[0.75rem]">
+        <input checked={strict} onChange={event => setStrict(event.target.checked)} type="checkbox" />
+        Reject profiles outside this roster
+      </label>
+      <label className="flex items-center gap-2 text-[0.75rem]">
+        <input checked={requireReview} onChange={event => setRequireReview(event.target.checked)} type="checkbox" />
+        Require review before completion
+      </label>
+      <label className="flex items-center gap-2 text-[0.75rem]">
+        <input checked={enforcePins} onChange={event => setEnforcePins(event.target.checked)} type="checkbox" />
+        Block dispatch when profile versions drift
+      </label>
+      {audit && (
+        <div className="rounded-md border border-(--ui-border) p-2 text-[0.6875rem] text-(--ui-text-tertiary)">
+          <div className="mb-1 font-medium">Version audit: {audit.ok ? 'verified' : 'attention required'}</div>
+          {audit.profiles.map(profile => (
+            <div className="flex gap-2" key={profile.name}>
+              <span>{profile.name}</span>
+              <span className="ml-auto font-mono text-(--ui-text-quaternary)">
+                {profile.current?.distribution_version || 'local'} ·{' '}
+                {(profile.current?.definition_sha256 || '').slice(0, 12)}
+              </span>
+              {profile.drifted && <span className="text-destructive">drift</span>}
+            </div>
+          ))}
+          {audit.issues.map(issue => (
+            <div className="text-destructive" key={issue}>
+              {issue}
+            </div>
+          ))}
+        </div>
+      )}
     </BoardDialog>
   )
 }

@@ -120,6 +120,10 @@ class DispatchResult:
     """``(task_id, assignee, current_running_count)`` deferred because the
     assignee is at ``kanban.max_in_progress_per_profile``. Picked up on a later
     tick; separate bucket so dashboards show "profile busy" vs "stuck"."""
+    skipped_roster: list[tuple[str, str]] = field(default_factory=list)
+    """``(task_id, reason)`` rejected by the board roster or its version-pin
+    policy (:func:`kanban_db.board_profile_allowed`); a ``roster_rejected``
+    event records each distinct reason once."""
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
@@ -1797,6 +1801,15 @@ def _dispatch_lane_task(
     skip is recorded on ``result``.
     """
     task_id = row["id"]
+    # Board roster / version-pin policy first: a rejected profile is an operator
+    # decision, not a missing profile, and must not fall through to spawning.
+    role = "reviewer" if lane == "review" else "worker"
+    roster_ok, roster_reason = _kb.board_profile_allowed(assignee, role=role, board=board)
+    if not roster_ok:
+        result.skipped_roster.append((task_id, roster_reason))
+        if not dry_run:
+            _record_roster_rejection(conn, task_id, assignee, role, roster_reason)
+        return False
     # Non-profile assignees (control-plane lanes that pull via ``claim_task``)
     # would fail ``hermes -p <assignee>`` at startup and loop ready→crash→ready
     # forever. Bucketed apart from skipped_unassigned: the operator cannot fix
@@ -1881,6 +1894,19 @@ def _dispatch_lane_task(
         ):
             result.auto_blocked.append(claimed.id)
         return False
+
+
+def _record_roster_rejection(
+    conn: sqlite3.Connection, task_id: str, profile: str, role: str, reason: str,
+) -> None:
+    """Append ``roster_rejected`` only when the rejection changed — a dispatcher
+    ticking every few seconds must not flood ``task_events``."""
+    payload = {"profile": profile, "role": role, "reason": reason}
+    latest = _kb._latest_event(conn, task_id, "roster_rejected")
+    if latest is not None and _kb._json_dict(_kb._row_get(latest, "payload")) == payload:
+        return
+    with _kb.write_txn(conn):
+        _kb._append_event(conn, task_id, "roster_rejected", payload)
 
 
 def _apply_default_assignee(
@@ -2104,6 +2130,8 @@ def _dispatch_once_locked(
         per_profile_cap=per_profile_cap, per_profile_running=per_profile_running,
     )
     default_assignee = _resolve_default_assignee(default_assignee)
+    if default_assignee and not _kb.board_profile_allowed(default_assignee, role="worker", board=board)[0]:
+        default_assignee = None  # a roster-rejected fallback leaves cards visibly unassigned
     spawned = 0
     for row in ready_rows:
         if ready_budget is not None and spawned >= ready_budget:
