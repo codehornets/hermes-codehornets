@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
-import { Check, ShieldCheck, Trash2, Users, X } from "lucide-react";
+import { useNavigate } from "react-router";
+import {
+  BookOpen,
+  Check,
+  Radio,
+  ShieldCheck,
+  Trash2,
+  Users,
+  X,
+} from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
@@ -29,6 +38,7 @@ function getUserLabel(user: PairingUser): string {
 }
 
 export default function PairingPage() {
+  const navigate = useNavigate();
   const [pending, setPending] = useState<PairingUser[]>([]);
   const [approved, setApproved] = useState<PairingUser[]>([]);
   const [loading, setLoading] = useState(true);
@@ -140,6 +150,39 @@ export default function PairingPage() {
     <div className="flex flex-col gap-6">
       <Toast toast={toast} />
 
+      <Card>
+        <CardContent className="flex flex-col gap-4 py-5 sm:flex-row sm:items-center sm:justify-between">
+          <div className="max-w-3xl">
+            <div className="text-sm font-semibold text-foreground">
+              Authorize messaging users without sharing credentials
+            </div>
+            <p className="mt-1 text-sm leading-6 text-muted-foreground">
+              An unknown user sends a direct message to a configured channel,
+              Hermes replies with a one-time code, and the request appears here
+              for approval.
+            </p>
+          </div>
+          <div className="flex shrink-0 flex-wrap gap-2">
+            <Button
+              outlined
+              size="sm"
+              onClick={() => navigate("/channels")}
+              prefix={<Radio className="h-4 w-4" />}
+            >
+              Configure channel
+            </Button>
+            <Button
+              ghost
+              size="sm"
+              onClick={() => navigate("/docs")}
+              prefix={<BookOpen className="h-4 w-4" />}
+            >
+              Pairing guide
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
       <DeleteConfirmDialog
         open={userRevoke.isOpen}
         onCancel={userRevoke.cancel}
@@ -166,8 +209,23 @@ export default function PairingPage() {
 
         {pending.length === 0 && (
           <Card>
-            <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              No pending pairing requests
+            <CardContent className="flex flex-col items-center py-8 text-center text-sm text-muted-foreground">
+              <ShieldCheck className="mb-3 h-7 w-7" />
+              <div className="font-medium text-foreground">
+                No pending pairing requests
+              </div>
+              <div className="mt-1 max-w-xl">
+                Ask the user to send a direct message to a configured Hermes
+                channel. Their one-time pairing request will appear here.
+              </div>
+              <Button
+                outlined
+                size="sm"
+                className="mt-4"
+                onClick={() => navigate("/channels")}
+              >
+                Open Channels
+              </Button>
             </CardContent>
           </Card>
         )}
@@ -228,7 +286,13 @@ export default function PairingPage() {
         {approved.length === 0 && (
           <Card>
             <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              No approved users
+              <div className="font-medium text-foreground">
+                No approved users yet
+              </div>
+              <div className="mt-1">
+                Approved identities are stored per platform and can be revoked
+                here at any time.
+              </div>
             </CardContent>
           </Card>
         )}

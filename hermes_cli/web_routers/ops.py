@@ -29,7 +29,9 @@ from hermes_cli.web_models import (
     BackupRequest, CredentialPoolAdd, HookCreate, HookDelete, ImportRequest, MemoryProviderSelect,
     MemoryReset, PairingApprove, PairingRevoke, WebhookCreate, WebhookEnabledToggle,
 )
-from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, http_failure, spawn_profile_action
+from hermes_cli.web_routers._common import (
+    _CONFIG_MUTATION_LOCK, _profile_scope, http_failure, scoped_to_thread, spawn_profile_action,
+)
 from hermes_cli.web_routers.files import stream_upload_to_path
 
 _log = logging.getLogger("hermes_cli.web_server")
@@ -444,7 +446,7 @@ _MEMORY_FILES = (("MEMORY.md", "memory"), ("USER.md", "user"))
 
 
 @router.get("/api/memory")
-async def get_memory_status():
+async def get_memory_status(profile: Optional[str] = None):
     def _run():  # load_config(), stats and discovery are disk reads — off-loop
         cfg = load_config()
         mem = cfg.get("memory")
@@ -456,11 +458,11 @@ async def get_memory_status():
             files[key] = path.stat().st_size if path.exists() else 0
         return {"active": active, "providers": _discover_memory_provider_statuses(), "builtin_files": files}
 
-    return await asyncio.to_thread(_run)
+    return await scoped_to_thread(profile, _run)
 
 
 @router.put("/api/memory/provider")
-async def set_memory_provider(body: MemoryProviderSelect):
+async def set_memory_provider(body: MemoryProviderSelect, profile: Optional[str] = None):
     provider = _normalize_memory_provider_name(body.provider)
 
     def _run():
@@ -473,25 +475,26 @@ async def set_memory_provider(body: MemoryProviderSelect):
             save_config(cfg)
         return {"ok": True, "active": provider}
 
-    return await asyncio.to_thread(_run)
+    return await scoped_to_thread(profile, _run)
 
 
 @router.post("/api/memory/reset")
-async def reset_memory(body: MemoryReset):
+async def reset_memory(body: MemoryReset, profile: Optional[str] = None):
     target = (body.target or "all").strip().lower()
     if target not in {"all", "memory", "user"}:
         raise HTTPException(status_code=400, detail="target must be all, memory, or user")
 
-    mem_dir = get_hermes_home() / "memories"
     deleted = []
-    for fname, key in _MEMORY_FILES:
-        path = mem_dir / fname
-        if target in {"all", key} and path.exists():
-            try:
-                path.unlink()
-                deleted.append(fname)
-            except OSError as exc:
-                raise HTTPException(status_code=500, detail=f"Could not delete {fname}: {exc}")
+    with _profile_scope(profile):
+        mem_dir = get_hermes_home() / "memories"
+        for fname, key in _MEMORY_FILES:
+            path = mem_dir / fname
+            if target in {"all", key} and path.exists():
+                try:
+                    path.unlink()
+                    deleted.append(fname)
+                except OSError as exc:
+                    raise HTTPException(status_code=500, detail=f"Could not delete {fname}: {exc}")
     return {"ok": True, "deleted": deleted}
 
 

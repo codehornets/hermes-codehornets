@@ -37,6 +37,13 @@ describe("resolvePageTitle", () => {
     expect(resolvePageTitle("/webhooks", t, [])).toBe("Webhooks");
     expect(resolvePageTitle("/pairing", t, [])).toBe("Pairing");
     expect(resolvePageTitle("/files", t, [])).toBe("Files");
+    expect(resolvePageTitle("/overview", t, [])).toBe("Overview");
+    expect(resolvePageTitle("/inbox", t, [])).toBe("Inbox");
+    expect(resolvePageTitle("/projects", t, [])).toBe("Projects");
+    expect(resolvePageTitle("/fleet", t, [])).toBe("Agent Fleet");
+    expect(resolvePageTitle("/memory", t, [])).toBe("Memory");
+    expect(resolvePageTitle("/goals", t, [])).toBe("Goals");
+    expect(resolvePageTitle("/activity", t, [])).toBe("Activity");
   });
 
   it("prefers plugin tab labels", () => {
@@ -49,8 +56,8 @@ describe("resolvePageTitle", () => {
     expect(resolvePageTitle("/whatever", t, [])).toBe("Whatever");
   });
 
-  it("treats root as sessions and trailing slashes as equivalent", () => {
-    expect(resolvePageTitle("/", t, [])).toBe("Sessions");
+  it("treats root as overview and trailing slashes as equivalent", () => {
+    expect(resolvePageTitle("/", t, [])).toBe("Overview");
     expect(resolvePageTitle("/mcp/", t, [])).toBe("MCP");
   });
 });

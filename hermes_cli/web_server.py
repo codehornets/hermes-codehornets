@@ -744,6 +744,30 @@ async def _dashboard_health_middleware(request: Request, call_next):
     return response
 
 
+@app.middleware("http")
+async def _dashboard_audit_middleware(request: Request, call_next):
+    """Record authenticated dashboard mutations without retaining payloads."""
+    response = await call_next(request)
+    if (
+        request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"}
+        and request.url.path.startswith("/api/")
+        and not request.url.path.startswith("/api/auth/")
+    ):
+        from hermes_cli.web_routers.operations import record_dashboard_mutation
+
+        try:
+            await asyncio.to_thread(
+                record_dashboard_mutation,
+                method=request.method,
+                path=request.url.path,
+                status=response.status_code,
+                profile=request.query_params.get("profile"),
+            )
+        except Exception:
+            _log.debug("Could not append dashboard audit event", exc_info=True)
+    return response
+
+
 # Authenticated-route self-test: one in-process request per minute against a
 # cheap DB-touching route, catching "liveness fine but every authed request 500s".
 _DASHBOARD_SELFTEST_INTERVAL_SECONDS = 60.0
@@ -955,6 +979,7 @@ from hermes_cli.web_routers import (  # noqa: E402
     ops as _ops_routes,
     skills as _skills_routes,
     tools as _tools_routes,
+    operations as _operations_routes,
     analytics as _analytics_routes,
     chat_ws as _chat_ws_routes,
     dashboard_ui as _dashboard_ui_routes,
@@ -985,6 +1010,7 @@ app.include_router(_skills_routes.hub_router)
 app.include_router(_profiles_routes.router)
 app.include_router(_skills_routes.router)
 app.include_router(_tools_routes.router)
+app.include_router(_operations_routes.router)
 app.include_router(_analytics_routes.router)
 app.include_router(_chat_ws_routes.router)
 app.include_router(_dashboard_ui_routes.router)

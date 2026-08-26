@@ -671,6 +671,105 @@ export const api = {
   // Profiles
   getProfiles: () =>
     fetchJSON<{ profiles: ProfileInfo[] }>("/api/profiles"),
+  getProjects: (profile = getManagementProfile()) =>
+    fetchJSON<ProjectsResponse>(appendProfileParam("/api/projects", profile)),
+  createProject: (body: ProjectMutation, profile = getManagementProfile()) =>
+    fetchJSON<{ project: HermesProject }>(
+      appendProfileParam("/api/projects", profile),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...body, profile: profile || undefined }),
+      },
+    ),
+  updateProject: (
+    id: string,
+    body: Partial<ProjectMutation>,
+    profile = getManagementProfile(),
+  ) =>
+    fetchJSON<{ project: HermesProject }>(
+      appendProfileParam(`/api/projects/${encodeURIComponent(id)}`, profile),
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...body, profile: profile || undefined }),
+      },
+    ),
+  addProjectFolder: (
+    id: string,
+    body: { path: string; label?: string; is_primary?: boolean },
+    profile = getManagementProfile(),
+  ) =>
+    fetchJSON<{ project: HermesProject }>(
+      appendProfileParam(
+        `/api/projects/${encodeURIComponent(id)}/folders`,
+        profile,
+      ),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...body, profile: profile || undefined }),
+      },
+    ),
+  archiveProject: (
+    id: string,
+    restore = false,
+    profile = getManagementProfile(),
+  ) =>
+    fetchJSON<ProjectsResponse>(
+      appendProfileParam(
+        `/api/projects/${encodeURIComponent(id)}/archive?restore=${restore ? "true" : "false"}`,
+        profile,
+      ),
+      { method: "POST" },
+    ),
+  activateProject: (id: string, profile = getManagementProfile()) =>
+    fetchJSON<ProjectsResponse>(
+      appendProfileParam(
+        `/api/projects/${encodeURIComponent(id)}/activate`,
+        profile,
+      ),
+      { method: "POST" },
+    ),
+  deleteProject: (id: string, profile = getManagementProfile()) =>
+    fetchJSON<ProjectsResponse>(
+      appendProfileParam(`/api/projects/${encodeURIComponent(id)}`, profile),
+      {
+        method: "DELETE",
+      },
+    ),
+  getGoals: (profile = getManagementProfile()) =>
+    fetchJSON<GoalsResponse>(appendProfileParam("/api/goals", profile)),
+  mutateGoal: (
+    sessionId: string,
+    action: "pause" | "resume" | "clear",
+    profile = getManagementProfile(),
+  ) =>
+    fetchJSON<GoalsResponse>(
+      appendProfileParam(
+        `/api/goals/${encodeURIComponent(sessionId)}`,
+        profile,
+      ),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action, profile: profile || undefined }),
+      },
+    ),
+  getDashboardActivity: (limit = 100) =>
+    fetchJSON<DashboardActivityResponse>(`/api/activity?limit=${limit}`),
+  getKanbanBoard: () =>
+    fetchJSON<KanbanBoardResponse>("/api/plugins/kanban/board"),
+  getKanbanBoards: () =>
+    fetchJSON<KanbanBoardsResponse>("/api/plugins/kanban/boards"),
+  getKanbanRoster: (slug: string) =>
+    fetchJSON<KanbanRosterResponse>(
+      `/api/plugins/kanban/boards/${encodeURIComponent(slug)}/roster`,
+    ),
+  getKanbanDiagnostics: () =>
+    fetchJSON<KanbanDiagnosticsResponse>("/api/plugins/kanban/diagnostics"),
+  getKanbanActiveWorkers: () =>
+    fetchJSON<KanbanWorkersResponse>("/api/plugins/kanban/workers/active"),
   getActiveProfile: () =>
     fetchJSON<ActiveProfileInfo>("/api/profiles/active"),
   setActiveProfile: (name: string) =>
@@ -1198,41 +1297,94 @@ export const api = {
     ),
 
   // ── Admin: Memory provider ──────────────────────────────────────────
-  getMemory: () => fetchJSON<MemoryStatus>("/api/memory"),
-  getMemoryProviderConfig: (provider: string) =>
-    fetchJSON<MemoryProviderConfig>(
-      `/api/memory/providers/${encodeURIComponent(provider)}/config`,
+  getMemory: (profile = getManagementProfile()) =>
+    fetchJSON<MemoryStatus>(appendProfileParam("/api/memory", profile)),
+  getMemoryDocuments: (profile = getManagementProfile()) =>
+    fetchJSON<MemoryDocumentsResponse>(
+      appendProfileParam("/api/memory/documents", profile),
     ),
-  updateMemoryProviderConfig: (provider: string, values: Record<string, unknown>) =>
+  updateMemoryDocument: (
+    kind: "memory" | "user",
+    content: string,
+    profile = getManagementProfile(),
+  ) =>
+    fetchJSON<{ ok: boolean; kind: string; size: number }>(
+      appendProfileParam(
+        `/api/memory/documents/${encodeURIComponent(kind)}`,
+        profile,
+      ),
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content, profile: profile || undefined }),
+      },
+    ),
+  getMemoryProviderConfig: (
+    provider: string,
+    profile = getManagementProfile(),
+  ) =>
+    fetchJSON<MemoryProviderConfig>(
+      appendProfileParam(
+        `/api/memory/providers/${encodeURIComponent(provider)}/config`,
+        profile,
+      ),
+    ),
+  updateMemoryProviderConfig: (
+    provider: string,
+    values: Record<string, unknown>,
+    profile = getManagementProfile(),
+  ) =>
     fetchJSON<{ ok: boolean; active: string }>(
-      `/api/memory/providers/${encodeURIComponent(provider)}/config`,
+      appendProfileParam(
+        `/api/memory/providers/${encodeURIComponent(provider)}/config`,
+        profile,
+      ),
       {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ values }),
       },
     ),
-  setupMemoryProvider: (provider: string, values: Record<string, unknown> = {}) =>
+  setupMemoryProvider: (
+    provider: string,
+    values: Record<string, unknown> = {},
+    profile = getManagementProfile(),
+  ) =>
     fetchJSON<MemoryProviderSetupResponse>(
-      `/api/memory/providers/${encodeURIComponent(provider)}/setup`,
+      appendProfileParam(
+        `/api/memory/providers/${encodeURIComponent(provider)}/setup`,
+        profile,
+      ),
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ values }),
       },
     ),
-  setMemoryProvider: (provider: string) =>
-    fetchJSON<{ ok: boolean; active: string }>("/api/memory/provider", {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ provider }),
-    }),
-  resetMemory: (target: "all" | "memory" | "user") =>
-    fetchJSON<{ ok: boolean; deleted: string[] }>("/api/memory/reset", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ target }),
-    }),
+  setMemoryProvider: (
+    provider: string,
+    profile = getManagementProfile(),
+  ) =>
+    fetchJSON<{ ok: boolean; active: string }>(
+      appendProfileParam("/api/memory/provider", profile),
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider }),
+      },
+    ),
+  resetMemory: (
+    target: "all" | "memory" | "user",
+    profile = getManagementProfile(),
+  ) =>
+    fetchJSON<{ ok: boolean; deleted: string[] }>(
+      appendProfileParam("/api/memory/reset", profile),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target }),
+      },
+    ),
 
   // ── Admin: Gateway lifecycle ────────────────────────────────────────
   startGateway: () =>
@@ -2235,6 +2387,199 @@ export interface ProfileInfo {
   distribution_version: string | null;
   distribution_source: string | null;
   has_alias: boolean;
+}
+
+export interface ProjectFolder {
+  path: string;
+  label: string | null;
+  is_primary: boolean;
+  added_at: number;
+}
+
+export interface HermesProject {
+  id: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  icon: string | null;
+  color: string | null;
+  board_slug: string | null;
+  primary_path: string | null;
+  archived: boolean;
+  created_at: number;
+  folders: ProjectFolder[];
+}
+
+export interface ProjectsResponse {
+  projects: HermesProject[];
+  active_id: string | null;
+}
+
+export interface ProjectMutation {
+  name: string;
+  slug?: string;
+  description?: string;
+  icon?: string;
+  color?: string;
+  board_slug?: string;
+  primary_path?: string;
+  folders?: string[];
+  use?: boolean;
+}
+
+export interface GoalInfo {
+  session_id: string;
+  session_title: string | null;
+  session_source: string | null;
+  session_model: string | null;
+  goal: string;
+  status: "active" | "paused" | "done" | "cleared";
+  turns_used: number;
+  max_turns: number;
+  created_at: number;
+  last_turn_at: number;
+  last_verdict: string | null;
+  last_reason: string | null;
+  paused_reason: string | null;
+  subgoals: string[];
+  waiting_reason: string | null;
+  gates: Array<{ command: string; timeout_seconds?: number }>;
+}
+
+export interface GoalsResponse {
+  goals: GoalInfo[];
+  count: number;
+}
+
+export interface DashboardActivityEvent {
+  timestamp: string;
+  epoch: number;
+  method: string;
+  path: string;
+  status: number;
+  profile: string;
+}
+
+export interface DashboardActivityResponse {
+  events: DashboardActivityEvent[];
+  count: number;
+}
+
+export interface KanbanTaskSummary {
+  id: string;
+  title: string;
+  status: string;
+  assignee: string | null;
+  priority?: number;
+  updated_at?: number;
+  diagnostics?: Array<{ severity?: string; code?: string; message?: string }>;
+}
+
+export interface KanbanBoardResponse {
+  columns: Array<{ name: string; tasks: KanbanTaskSummary[] }>;
+  assignees: string[];
+  tenants: string[];
+  now: number;
+}
+
+export interface KanbanBoardInfo {
+  slug: string;
+  name: string;
+  description?: string;
+  is_current: boolean;
+  counts: Record<string, number>;
+  total: number;
+  project_id?: string | null;
+  project_name?: string | null;
+  roster?: {
+    orchestrator?: string | null;
+    workers?: string[];
+    reviewers?: string[];
+  };
+  policy?: {
+    allow_unlisted_profiles?: boolean;
+    require_review?: boolean;
+    enforce_profile_pins?: boolean;
+  };
+  profile_pins?: Record<
+    string,
+    { distribution_version?: string | null; definition_sha256?: string | null }
+  >;
+}
+
+export interface KanbanBoardsResponse {
+  boards: KanbanBoardInfo[];
+  current: string;
+}
+
+export interface KanbanRosterResponse {
+  board: string;
+  roster: {
+    orchestrator: string | null;
+    workers: string[];
+    reviewers: string[];
+  };
+  policy: {
+    allow_unlisted_profiles: boolean;
+    require_review: boolean;
+    enforce_profile_pins: boolean;
+  };
+  profiles: Array<{
+    name: string;
+    exists: boolean;
+    drifted: boolean;
+    pin?: {
+      distribution_version?: string | null;
+      definition_sha256?: string | null;
+    } | null;
+    current?: {
+      distribution_version?: string | null;
+      definition_sha256?: string | null;
+    } | null;
+  }>;
+  issues: string[];
+  ok: boolean;
+}
+
+export interface KanbanWorkerInfo {
+  run_id: number;
+  task_id: string;
+  task_title: string;
+  task_assignee: string | null;
+  profile: string | null;
+  worker_pid: number;
+  started_at: number;
+  last_heartbeat_at: number | null;
+}
+
+export interface KanbanWorkersResponse {
+  workers: KanbanWorkerInfo[];
+  count: number;
+  checked_at: number;
+}
+
+export interface KanbanDiagnosticsResponse {
+  diagnostics: Array<{
+    task_id: string;
+    task_title: string | null;
+    task_status: string | null;
+    task_assignee: string | null;
+    diagnostics: Array<{ severity?: string; code?: string; message?: string }>;
+  }>;
+  count: number;
+}
+
+export interface MemoryDocument {
+  kind: "memory" | "user";
+  filename: string;
+  path: string;
+  content: string;
+  size: number;
+  updated_at: number | null;
+}
+
+export interface MemoryDocumentsResponse {
+  documents: MemoryDocument[];
 }
 
 export interface ModelsAnalyticsModelEntry {

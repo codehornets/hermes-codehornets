@@ -22,7 +22,7 @@ from hermes_cli.web_server_memory import (
     _coerce_bool, _field_default, _field_is_set, _field_value, _field_visible, _load_memory_provider, _memory_provider_manifest, _memory_provider_setup_info, _memory_provider_setup_manifest, _normalize_memory_provider_schema, _read_memory_provider_existing_values, _require_memory_provider_ready, _run_setup_command,
 )
 from hermes_cli.web_models import MemoryProviderConfigUpdate, MemoryProviderSetupRequest
-from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, scoped_to_thread
+from hermes_cli.web_routers._common import _CONFIG_MUTATION_LOCK, _profile_scope, scoped_to_thread
 from plugins.memory.config_schema import (
     STORAGE_HONCHO_HOST_BLOCK, ProviderConfigSchema, ProviderField, get_provider_config_schema,
 )
@@ -534,20 +534,21 @@ async def get_memory_provider_config(name: str, surface: Optional[str] = None, p
 
 
 @router.post("/api/memory/providers/{name}/setup")
-async def setup_memory_provider(name: str, body: MemoryProviderSetupRequest):
+async def setup_memory_provider(name: str, body: MemoryProviderSetupRequest, profile: Optional[str] = None):
     _require_valid_memory_provider_name(name)
-    provider = _load_memory_provider(name)
-    if provider is None and not _memory_provider_manifest(name):
-        # No discoverable plugin directory -> no manifest that could declare
-        # setup commands; refuse before the command-running path. (provider
-        # may be None with a manifest present when its pip deps aren't
-        # installed yet — that's the setup use case.)
-        raise _unknown_provider(name)
-    if provider is not None and body.values:
-        with _value_errors_as_http("Failed to persist memory provider setup values for %s", name, passthrough_http=False):
-            _write_memory_provider_config_values(name, provider, body.values)
-    _invalidate_plugins_hub_cache()
-    return _install_memory_provider_setup(name)
+    with _profile_scope(profile):
+        provider = _load_memory_provider(name)
+        if provider is None and not _memory_provider_manifest(name):
+            # No discoverable plugin directory -> no manifest that could declare
+            # setup commands; refuse before the command-running path. (provider
+            # may be None with a manifest present when its pip deps aren't
+            # installed yet — that's the setup use case.)
+            raise _unknown_provider(name)
+        if provider is not None and body.values:
+            with _value_errors_as_http("Failed to persist memory provider setup values for %s", name, passthrough_http=False):
+                _write_memory_provider_config_values(name, provider, body.values)
+        _invalidate_plugins_hub_cache()
+        return _install_memory_provider_setup(name)
 
 
 @router.put("/api/memory/providers/{name}/config")

@@ -1,7 +1,7 @@
 ---
 sidebar_position: 15
 title: "Hermes Web Dashboard"
-description: "Browser-based administration panel for managing configuration, API keys, MCP servers, messaging pairing, webhooks, the gateway, memory, credentials, sessions, logs, analytics, cron jobs, and skills"
+description: "Browser-based operations and administration for agents, projects, goals, memory, tasks, configuration, channels, and integrations"
 ---
 
 # Hermes Web Dashboard
@@ -94,16 +94,74 @@ The Chat tab is part of every `hermes dashboard` launch — the embedded browser
 
 ## Pages
 
-### Status
+### Operations navigation
 
-The landing page shows a live overview of your installation:
+The dashboard lands on **Overview** and groups the sidebar by operator intent:
 
-- **Agent version** and release date
-- **Gateway status** — running/stopped, PID, connected platforms and their state
-- **Active sessions** — count of sessions active in the last 5 minutes
-- **Recent sessions** — list of the 20 most recent sessions with model, message count, token usage, and a preview of the conversation
+- **Work** — Overview, Human Inbox, Chat, Sessions, Files, and Projects
+- **Agents** — Agent Fleet, Profiles, Models, Skills, Memory, and Goals
+- **Automation** — Cron and the Kanban plugin when it is installed
+- **Integrations** — Plugins, MCP, Channels, Webhooks, and Pairing
+- **Administration** — Activity, Logs, Analytics (when enabled), Config, Keys,
+  System, and Documentation
 
-The status page auto-refreshes every 5 seconds.
+Press <kbd>Ctrl</kbd>+<kbd>K</kbd> (or <kbd>Command</kbd>+<kbd>K</kbd> on
+macOS) to open the command palette. It searches every available dashboard
+page, plugin tab, and recent session without adding another model tool.
+
+### Overview
+
+The landing page is an operations summary assembled from the existing status,
+profile, cron, pairing, and Kanban APIs. It shows gateway health, agent and
+worker counts, queued work, items needing attention, the next automation, and
+quick links into the relevant control surface. A missing or disabled optional
+plugin degrades to empty operational signals instead of breaking the page.
+
+### Human Inbox
+
+The Human Inbox combines the places where an operator must make a decision:
+pending pairing requests, Kanban tasks waiting for review or blocked, failed
+cron jobs, and board diagnostics. It is an index into the canonical owning
+pages; it does not duplicate task, pairing, or scheduler state.
+
+### Projects
+
+Projects are profile-scoped workspace records backed by the same project
+registry as the CLI. A project can hold one primary path, additional folders,
+and an optional Kanban board slug. From the page you can create a project,
+make it active for future work, archive or restore it, and delete it. Project
+folders remain ordinary directories—the dashboard stores references rather
+than copying their contents.
+
+### Agent Fleet
+
+Agent Fleet gives a human-auditable roster across profiles: model/provider,
+version, enabled skills, gateway state, Kanban role assignments, roster drift,
+and active worker heartbeats. Use **Profiles** to change configuration; Fleet
+is the operational comparison and health surface.
+
+### Memory
+
+The Memory page combines provider health with explicit access to the selected
+profile's built-in `MEMORY.md` and `USER.md` documents. Documents can be
+searched, edited, exported, or cleared. Writes are atomic and limited to 2 MiB
+per document. Existing conversations keep their cached prompt; changes take
+effect when a later session loads memory.
+
+### Goals
+
+Goals lists durable goal state stored against sessions, including progress,
+turn budget, subgoals, gates, and pause reasons. Operators can pause, resume,
+or clear a goal without reconstructing agent state in the browser.
+
+### Activity
+
+Activity combines recent sessions with a dashboard mutation trail. The trail
+records method, route, status, time, and profile for dashboard writes, but
+never request bodies (which may contain secrets). Events are stored in
+the dashboard process's `logs/dashboard-audit.jsonl`, naming the target
+profile on every event, and rotate at 5 MiB. Detailed runtime output remains
+available under **Logs**.
 
 #### Resource pressure banner
 
