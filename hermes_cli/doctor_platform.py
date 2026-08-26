@@ -4,6 +4,7 @@ Split out of ``hermes_cli/doctor.py``, which re-exports every name so ``hermes_c
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -495,15 +496,34 @@ def _check_gateway_supervision(should_fix: bool, f: Finding) -> None:
 @doctor_check()
 def _check_command_installation(should_fix: bool, f: Finding) -> None:
     """Venv entry point and the ~/.local/bin (or $PREFIX/bin) symlink; skipped on Windows."""
-    from hermes_cli.doctor import PROJECT_ROOT
+    from hermes_cli import doctor as _doctor
+    PROJECT_ROOT = _doctor.PROJECT_ROOT
     if sys.platform == "win32":
         return
     _section("Command Installation")
-    venv_bin = next((c for c in (PROJECT_ROOT / n / "bin" / "hermes" for n in ("venv", ".venv")) if c.exists()), None)
+    # Prefer the entry point beside the interpreter running doctor. Development installs
+    # keep their venv outside the checkout, so limiting discovery to PROJECT_ROOT/{venv,.venv}
+    # falsely reports a broken installation for the documented layout. Only trust that when
+    # the imported package *is* the checkout; otherwise fall back to the in-tree venvs.
+    venv_bin = None
+    if Path(_doctor.__file__).resolve().parent.parent == PROJECT_ROOT.resolve():
+        # Do not resolve sys.executable: venv Python binaries are commonly symlinks to uv's
+        # shared interpreter, while the console script sits beside the symlink inside the venv.
+        active = Path(sys.executable).parent / "hermes"
+        if active.is_file():
+            venv_bin = active
     if venv_bin is None:
-        check_warn("Venv entry point not found", "(hermes not in venv/bin/ or .venv/bin/ — reinstall with pip install -e '.[all]')")
-        return f.manual_issues.append(f"Reinstall entry point: cd {PROJECT_ROOT} && source venv/bin/activate && pip install -e '.[all]'")
-    check_ok(f"Venv entry point exists ({venv_bin.relative_to(PROJECT_ROOT)})")
+        venv_bin = next((c for c in (PROJECT_ROOT / n / "bin" / "hermes" for n in ("venv", ".venv")) if c.is_file()), None)
+    if venv_bin is None:
+        check_warn("Venv entry point not found", "(hermes not beside the active Python or in venv/bin/ or .venv/bin/)")
+        return f.manual_issues.append(
+            f"Reinstall entry point: cd {shlex.quote(str(PROJECT_ROOT))} && "
+            f"uv pip install --python {shlex.quote(sys.executable)} -e '.[all]'")
+    try:
+        venv_display = venv_bin.relative_to(PROJECT_ROOT)
+    except ValueError:
+        venv_display = venv_bin
+    check_ok(f"Venv entry point exists ({venv_display})")
     # Expected command link directory (mirrors install.sh logic).
     prefix = os.environ.get("PREFIX", "")
     termux = prefix and (os.environ.get("TERMUX_VERSION") or "com.termux/files/usr" in prefix)

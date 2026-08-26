@@ -149,3 +149,45 @@ class TestDoctorCommandInstallation:
         assert "Command Installation" in out
         assert "$PREFIX/bin" in out
 
+    @pytest.mark.skipif(sys.platform == "win32", reason="Entry-point check is Unix-only")
+    def test_external_active_venv_entry_point_is_valid(self, monkeypatch, tmp_path):
+        """The documented external development venv must be recognized."""
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True)
+        (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
+
+        project = tmp_path / "project"
+        module_dir = project / "hermes_cli"
+        module_dir.mkdir(parents=True)
+        fake_doctor_file = module_dir / "doctor.py"
+        fake_doctor_file.write_text("# test module location\n", encoding="utf-8")
+
+        external_bin = tmp_path / "external-venv" / "bin"
+        external_bin.mkdir(parents=True)
+        external_hermes = external_bin / "hermes"
+        external_hermes.write_text("#!/bin/sh\n", encoding="utf-8")
+        external_hermes.chmod(0o755)
+        shared_python = tmp_path / "shared-python" / "bin" / "python"
+        shared_python.parent.mkdir(parents=True)
+        shared_python.write_text("#!/bin/sh\n", encoding="utf-8")
+        external_python = external_bin / "python"
+        external_python.symlink_to(shared_python)
+
+        monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+        monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+        monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+        monkeypatch.setattr(doctor_mod, "__file__", str(fake_doctor_file))
+        monkeypatch.setattr(doctor_mod.sys, "executable", str(external_python))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        fake_model_tools = types.SimpleNamespace(
+            check_tool_availability=lambda *a, **kw: ([], []),
+            TOOLSET_REQUIREMENTS={},
+        )
+        monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+        out = _run_doctor(fix=False)
+
+        assert f"Venv entry point exists ({external_hermes})" in out
+        assert "Venv entry point not found" not in out
+        assert "Reinstall entry point" not in out
