@@ -28,6 +28,27 @@ To be a kanban worker lane, an integration must provide three things:
 
 The dispatcher matches `task.assignee` against either a Hermes profile name (the default lane shape) or a registered non-spawnable identifier (the plugin lane shape — see [Adding an external CLI worker lane](#adding-an-external-cli-worker-lane) below). Tasks whose assignee doesn't resolve are left on `ready` with a `skipped_nonspawnable` event so a board operator can fix them; they are not silently dropped or executed by an arbitrary fallback.
 
+An audited board can add a second, explicit identity gate in `board.json`:
+
+- `roster.orchestrator` owns root/decomposition work;
+- `roster.workers` may implement ready tasks;
+- `roster.reviewers` may claim the first-class review lane; and
+- `policy.allow_unlisted_profiles: false` makes those lists authoritative.
+
+Use `hermes kanban boards roster-add ...` instead of editing JSON by hand: it
+normalizes the profile name and records a profile version pin at the same time.
+The kernel enforces membership in task creation, assignment, decomposition,
+claim, review routing, and dispatch—not only in the dashboard dropdown. A
+legacy row that names an unlisted profile remains visible but is not spawned;
+the dispatcher emits one deduplicated `roster_rejected` event with the failed
+role and reason.
+
+External or human-pulled lane identifiers are intentionally compatible with
+the default permissive policy. On a strict board, they must be represented by
+an allowed Hermes profile or the board must remain permissive; an arbitrary
+assignee string cannot bypass the roster merely because another process plans
+to pull it.
+
 ### 2. A spawn mechanism
 
 For Hermes profile lanes, the dispatcher's `_default_spawn` runs `hermes -p <assignee> chat -q <prompt>` (or the equivalent module form when the `hermes` shim isn't on `$PATH`) inside the task's pinned workspace, with these env vars set:
@@ -92,6 +113,12 @@ For code-changing tasks, pick the review model encoded by the task graph:
 
 Both review models carry their structured handoff on the lifecycle transition itself. Do not place secrets, tokens, or raw PII in `summary` or `metadata`; run rows are durable.
 
+When `policy.require_review` is enabled for the board, an implementation run's
+direct `kanban_complete` is rejected. It must call `kanban_request_review`; an
+explicit reviewer is validated against `roster.reviewers`, while an omitted
+reviewer uses the first configured board reviewer. A review run (or a human
+approving a card already in `review`) can still complete the card.
+
 The injected `KANBAN_GUIDANCE` covers both graph shapes, `kanban_complete`, the same-card review loop, and `kanban_block` for genuine blockers.
 
 ## Logs and audit trail
@@ -100,6 +127,7 @@ The dispatcher writes per-task worker stdout/stderr to `<board-root>/logs/<task_
 
 - `task_runs` rows carry the `log_path`, exit code (where available), summary, and metadata.
 - `task_events` rows carry every state transition (`promoted`, `claimed`, `heartbeat`, `completed`, `blocked`, `review_requested`, `changes_requested`, `review_reopened`, `gave_up`, `crashed`, `timed_out`, `reclaimed`, `claim_extended`).
+- `task_runs.provenance` captures the Hermes version/commit, profile distribution and definition hash, resolved model/provider, and requested skill versions for the individual attempt.
 - `kanban_show` returns both, so a reviewer (or a follow-up worker) reading the task gets the full history without needing dashboard access.
 
 The dashboard renders run history with summaries, metadata blocks, and exit-status badges. CLI users can run `hermes kanban tail <task_id>` to follow live, or `hermes kanban runs <task_id>` for the historical attempt list.
@@ -110,7 +138,11 @@ The dashboard renders run history with summaries, metadata blocks, and exit-stat
 
 The shape every kanban worker takes today: the assignee is a profile name, the dispatcher spawns `hermes -p <profile>`, the worker gets the `KANBAN_GUIDANCE` system-prompt block injected automatically, and uses the `kanban_*` tools to terminate the run. No setup beyond defining the profile.
 
-When you create profiles for your fleet, choose names that match the *role* you want the orchestrator to route to. The orchestrator (when there is one) discovers your profile names via `hermes profile list` — there's no fixed roster the system assumes (the orchestrator side of the contract is part of the injected `KANBAN_GUIDANCE`).
+When you create profiles for your fleet, choose names that match the *role* you
+want the orchestrator to route to. A permissive board discovers the global set
+via `hermes profile list`. A strict board instead exposes only its workers and
+orchestrator to the decomposer, so the generated graph cannot route around the
+board-owned roster.
 
 ### Orchestrator profile lane
 

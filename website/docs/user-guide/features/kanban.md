@@ -208,6 +208,35 @@ hermes kanban boards roster-verify sellhand-actions
 hermes kanban boards roster-remove sellhand-actions software-engineer
 ```
 
+The relevant, abridged `board.json` shape is ordinary, human-readable JSON
+(the real `profile_pins` object contains one entry for every roster member):
+
+```json
+{
+  "roster": {
+    "orchestrator": "sellhand-orchestrator",
+    "workers": ["software-engineer"],
+    "reviewers": ["independent-reviewer"]
+  },
+  "policy": {
+    "allow_unlisted_profiles": false,
+    "require_review": true,
+    "enforce_profile_pins": true
+  },
+  "profile_pins": {
+    "software-engineer": {
+      "distribution_version": "1.4.0",
+      "definition_sha256": "<64-character SHA-256>"
+    }
+  }
+}
+```
+
+Treat the file as an audit artifact, but use the CLI or Board settings dialog
+to mutate it. Those paths normalize names, reject missing profiles, and refresh
+pins atomically; a hand edit can create a valid-looking policy that cannot
+dispatch.
+
 Existing boards remain permissive until `--strict` is enabled. With strict
 membership enabled, task creation, assignment, decomposition, review routing,
 and dispatcher spawning reject unlisted profiles. `--require-review` prevents
@@ -242,11 +271,16 @@ matters.
 - **+ New board** — opens a modal asking for slug, display name,
   description, and icon. Option to auto-switch to the new board.
 - **Settings** — opens a modal for editing the current board's display
-  name, description, and **project directory** (`default_workdir`). The
+  name, description, **project directory** (`default_workdir`), role roster,
+  and enforcement policy. The live **Version audit** block shows each
+  profile's distribution version, definition hash, and drift state. The
   project directory is the board-level workspace default every new task
   inherits (git repo → preserved worktree, plain dir → preserved
   directory); each task can still override it at creation time. Clearing
   the field reverts new tasks to disposable scratch workspaces.
+- **Task drawer → Run history → Agent provenance** — expands the immutable
+  execution snapshot for an individual attempt, so the profile version shown
+  there remains accurate even after the current roster pin changes.
 - **Archive** — only shown on non-`default` boards. Confirms, then moves
   the board dir to `boards/_archived/`.
 
@@ -716,7 +750,7 @@ hermes dashboard        # "Kanban" tab appears in the nav, after "Skills"
 ### What the plugin gives you
 
 - A **Kanban** tab showing one column per status: `triage`, `todo`, `ready`, `running`, `blocked`, `done` (plus `archived` when the toggle is on).
-  - `triage` is the parking column for rough ideas. By default (`kanban.auto_decompose: true`), the dispatcher auto-runs the **decomposer** on tasks that land here. The built-in decomposer uses the `auxiliary.kanban_decomposer` model path, reads your profile roster (with descriptions), and fans the task out into a small graph of child tasks routed to the best-fit specialists. The original task stays alive as the parent of every child so its assignee (`kanban.orchestrator_profile`, or the active default profile when unset) wakes back up to judge completion when everything finishes. Flip the **Orchestration: Auto/Manual** pill at the top of the page (emerald = Auto, muted gray = Manual), or by editing `config.yaml` directly. Both modes coexist with `hermes kanban specify` - that's still available as a single-task spec rewrite when you don't want fan-out.
+  - `triage` is the parking column for rough ideas. By default (`kanban.auto_decompose: true`), the dispatcher auto-runs the **decomposer** on tasks that land here. The built-in decomposer uses the `auxiliary.kanban_decomposer` model path, reads the board-eligible profile roster (with descriptions), and fans the task out into a small graph of child tasks routed to the best-fit specialists. The original task stays alive as the parent of every child so its assignee (the board's roster orchestrator, then `kanban.orchestrator_profile`, then the active default profile) wakes back up to judge completion when everything finishes. Flip the **Orchestration: Auto/Manual** pill at the top of the page (emerald = Auto, muted gray = Manual), or by editing `config.yaml` directly. Both modes coexist with `hermes kanban specify` - that's still available as a single-task spec rewrite when you don't want fan-out.
 - Cards show the task id, title, priority badge, tenant tag, assigned profile, comment/link counts, a **progress pill** (`N/M` children done when the task has dependents), and "created N ago". A per-card checkbox enables multi-select.
 - **Per-profile lanes inside Running** — toolbar checkbox toggles sub-grouping of the Running column by assignee.
 - **Live updates via WebSocket** — the plugin tails the append-only `task_events` table on a short poll interval; the board reflects changes the instant any profile (CLI, gateway, or another dashboard tab) acts. Reloads are debounced so a burst of events triggers a single refetch.
@@ -738,7 +772,7 @@ Visually the target is the familiar Linear / Fusion layout: dark theme, column h
 
 The kanban board has two ways to handle a task you drop into the Triage column:
 
-**Auto (default)** — `kanban.auto_decompose: true`. The gateway-embedded dispatcher runs the **decomposer** on each tick, capped by `kanban.auto_decompose_per_tick` (default 3 tasks per tick) so a bulk-load of triage tasks doesn't burst-spend the auxiliary LLM. The decomposer uses the built-in decomposition prompt plus the `auxiliary.kanban_decomposer` model path, reads your installed profiles + their descriptions, and asks the LLM to produce a JSON task graph: which tasks to spawn, who they go to, and which depend on which. The original triage task becomes the parent of every leaf in the graph, so it stays alive until the whole graph completes - and then promotes back to `ready` so its assignee (`kanban.orchestrator_profile`, or the active default profile when unset) can judge completion and add more tasks if the work isn't done. This is the "drop a one-liner, walk away" flow.
+**Auto (default)** — `kanban.auto_decompose: true`. The gateway-embedded dispatcher runs the **decomposer** on each tick, capped by `kanban.auto_decompose_per_tick` (default 3 tasks per tick) so a bulk-load of triage tasks doesn't burst-spend the auxiliary LLM. The decomposer uses the built-in decomposition prompt plus the `auxiliary.kanban_decomposer` model path, reads the profiles eligible for this board + their descriptions, and asks the LLM to produce a JSON task graph: which tasks to spawn, who they go to, and which depend on which. The original triage task becomes the parent of every leaf in the graph, so it stays alive until the whole graph completes - and then promotes back to `ready` so its assignee (board roster orchestrator → global `kanban.orchestrator_profile` → active default profile) can judge completion and add more tasks if the work isn't done. This is the "drop a one-liner, walk away" flow.
 
 A completed built-in fan-out is recorded atomically with its child graph. Moving
 that root back to Triage does not create another graph; ordinary prerequisite
@@ -756,9 +790,9 @@ active tenant passed by tools) wins. Boards remain the hard isolation boundary.
 
 Flip between the two modes from the **Orchestration: Auto/Manual** pill at the top of the kanban page (emerald = Auto, muted gray = Manual), or by editing `config.yaml` directly. Both modes coexist with `hermes kanban specify` — that's still available as a single-task spec rewrite when you don't want fan-out.
 
-The decomposer's routing decisions depend on profile descriptions, which is a per-profile labeling primitive you set with `hermes profile create --description "..."`, `hermes profile describe <name> --text "..."`, `hermes profile describe <name> --auto` (LLM-generates from the profile's installed skills + model), or the dashboard's per-profile editor in the expanded **Orchestration settings** panel. Profiles without a description still appear in the roster — they're routable by name, just less precisely. The decomposer NEVER lands a child task with `assignee=None`: when the LLM picks an unknown profile, the child gets routed to `kanban.default_assignee` (or the active default profile if that's unset).
+The decomposer's routing decisions depend on profile descriptions, which is a per-profile labeling primitive you set with `hermes profile create --description "..."`, `hermes profile describe <name> --text "..."`, `hermes profile describe <name> --auto` (LLM-generates from the profile's installed skills + model), or the dashboard's per-profile editor in the expanded **Orchestration settings** panel. Profiles without a description still appear in the eligible roster — they're routable by name, just less precisely. On a strict board, only `roster.workers` plus `roster.orchestrator` are shown to the decomposer, and the first listed worker is the safe fallback. On a permissive board, the decomposer sees all installed profiles and falls back to `kanban.default_assignee` (or the active default profile).
 
-`kanban.orchestrator_profile` does not load that profile's prompt, skills, or custom logic into the decomposition call. It controls who owns the root/orchestration task after fan-out. To change the decomposer's model/provider, configure `auxiliary.kanban_decomposer`. To use a profile's custom task-splitting logic instead of the built-in decomposer, switch to Manual mode and have that profile create or decompose tasks explicitly.
+Neither a board's `roster.orchestrator` nor `kanban.orchestrator_profile` loads that profile's prompt, skills, or custom logic into the decomposition call. They control who owns the root/orchestration task after fan-out. To change the decomposer's model/provider, configure `auxiliary.kanban_decomposer`. To use a profile's custom task-splitting logic instead of the built-in decomposer, switch to Manual mode and have that profile create or decompose tasks explicitly.
 
 Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 
@@ -766,7 +800,7 @@ Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 |---|---|---|
 | `auto_decompose` | `true` | Dispatcher auto-runs the built-in decomposer for Triage tasks every tick. It does not gate profile-driven `kanban_create` calls or creator wake turns. |
 | `auto_decompose_per_tick` | `3` | Cap on decompositions per dispatcher tick. Excess defers to the next tick. |
-| `orchestrator_profile` | `""` | Profile assigned to the root/orchestration task after decomposition. Empty = fall back to active default profile. |
+| `orchestrator_profile` | `""` | Global profile assigned to the root/orchestration task after decomposition. A board-level `roster.orchestrator` takes precedence; empty then falls back to the active default profile. |
 | `default_assignee` | `""` | Where a child task lands when the LLM picks an unknown profile. Empty = fall back to active default. |
 | `auto_subscribe_on_create` | `true` | When `kanban_create` runs inside a persistent gateway/TUI session, terminal events resume that originating agent with a synthetic status turn. Set to `false` for passive completion or to require explicit `kanban_notify-subscribe` calls. Independent of `auto_decompose`. |
 | `notify_in_gateway` | `true` | Poll and deliver Kanban subscriptions from this gateway. Set to `false` on profiles that own no notification subscriptions to stop the idle five-second notifier poll. Independent of `dispatch_in_gateway`; non-dispatch gateways may still own profile-specific delivery adapters. |
@@ -812,7 +846,11 @@ All routes are mounted under `/api/plugins/kanban/` and protected by the dashboa
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/board?tenant=<name>&include_archived=…` | Full board grouped by status column, plus tenants + assignees for filter dropdowns |
-| `GET` | `/tasks/:id` | Task + comments + events + links |
+| `GET` | `/tasks/:id` | Task + comments + events + links + runs, including immutable run provenance |
+| `GET` | `/boards` | Board metadata, task counts, roster policy, and version pins |
+| `POST` | `/boards` | Create an isolated board |
+| `PATCH` | `/boards/:slug` | Update board metadata, roster, and policy; new roster members receive version pins |
+| `GET` | `/boards/:slug/roster` | Live verification report: missing profiles, current versions, pins, and drift |
 | `POST` | `/tasks` | Create (wraps `kanban_db.create_task`, accepts `triage: bool` and `parents: [id, …]`) |
 | `PATCH` | `/tasks/:id` | Status / assignee / priority / title / body / result |
 | `POST` | `/tasks/bulk` | Apply the same patch (status / archive / assignee / priority) to every id in `ids`. Per-id failures reported without aborting siblings |
@@ -877,6 +915,25 @@ This is the surface **you** (or scripts, cron, the dashboard) use to drive the b
 
 ```
 hermes kanban init                                     # create kanban.db + print daemon hint
+hermes kanban boards list [--all] [--json]
+hermes kanban boards create <slug> [--name "..."] [--description "..."]
+        [--default-workdir /absolute/path] [--switch]
+hermes kanban boards switch <slug>
+hermes kanban boards show
+hermes kanban boards rename <slug> "New display name"
+hermes kanban boards set-default-workdir <slug> [/absolute/path]
+hermes kanban boards rm <slug> [--delete]
+
+# Board-owned agent roster and policy:
+hermes kanban boards roster <slug> [--json]
+        [--strict|--no-strict]
+        [--require-review|--no-require-review]
+        [--enforce-pins|--no-enforce-pins]
+hermes kanban boards roster-add <slug> <profile>
+        [--role orchestrator|worker|reviewer]
+hermes kanban boards roster-remove <slug> <profile>
+hermes kanban boards roster-verify <slug> [--json]
+
 hermes kanban create "<title>" [--body ...] [--assignee <profile>]
                                 [--parent <id>]... [--tenant <name>]
                                 [--workspace scratch|worktree|worktree:<path>|dir:<path>]
@@ -940,6 +997,13 @@ hermes kanban gc [--event-retention-days N]            # workspaces + old events
 ```
 
 All commands are also available as a slash command in the interactive CLI and in the messaging gateway (see [`/kanban` slash command](#kanban-slash-command) below).
+
+Board roster commands operate on global Hermes profiles; they never copy a
+profile into the board directory. `roster-add` records or refreshes that
+profile's version pin. `roster-verify` exits non-zero when a profile is missing,
+the required-review policy has no reviewer, or a pinned definition has drifted,
+which makes it suitable for CI and pre-dispatch checks. The `--no-*` variants
+turn a policy back off without deleting the roster or its audit history.
 
 `--max-retries` is a per-task circuit-breaker override for the dispatcher. `--max-retries 1` blocks the task on the first non-successful attempt, while `--max-retries 3` allows two retries and blocks on the third failure. Omit it to use `kanban.failure_limit` from `config.yaml`, then the built-in default.
 
@@ -1266,11 +1330,25 @@ A task is a logical unit of work; a **run** is one attempt to execute it. When t
 
 Why two tables instead of just mutating the task: you need **full attempt history** for real-world postmortems ("the second reviewer attempt got to approve, the third merged"), and you need a clean place to hang per-attempt metadata — which files changed, which tests ran, which findings a reviewer noted. Those are run facts, not task facts.
 
-Runs are also where **structured handoff** lives. When a worker completes a task (via `kanban_complete(...)`) it can pass:
+Runs are also where **structured handoff** and execution provenance live. When a worker completes a task (via `kanban_complete(...)`) it can pass:
 
 - `summary` (tool param) / `--summary` (CLI) — human handoff; goes on the run; downstream children see it in their `build_worker_context`.
 - `metadata` (tool param) / `--metadata` (CLI) — free-form JSON dict on the run; children see it serialized alongside the summary.
 - `result` (tool param) / `--result` (CLI) — short log line that goes on the task row (legacy field, kept for back-compat).
+
+At claim time Hermes writes a separate immutable `provenance` object on the run:
+
+- Hermes package version and source Git commit;
+- profile name, installed distribution name/version/source, and a SHA-256 of
+  its non-secret definition files;
+- the resolved model and provider, including task-level model overrides; and
+- every explicitly requested skill with its declared version and `SKILL.md`
+  hash when available.
+
+This is a snapshot of what actually started the attempt, not a pointer to the
+profile's current state. Later profile edits therefore do not rewrite history.
+`hermes kanban runs <id> --json`, `GET /tasks/:id`, and both dashboard run
+drawers expose the same `provenance` object.
 
 Downstream children read the most recent completed run's summary + metadata for each parent. Retrying workers read the prior attempts on their own task (outcome, summary, error) so they don't repeat a path that already failed.
 
@@ -1339,6 +1417,7 @@ Every transition appends a row to `task_events`. Each row carries an optional `r
 | Kind | Payload | When |
 |---|---|---|
 | `assigned` | `{assignee}` | Assignee changed (including unassignment). |
+| `roster_rejected` | `{profile, role, reason}` | Dispatcher refused an assignment because board membership or a version pin failed. Repeated ticks deduplicate an unchanged rejection. |
 | `edited` | `{fields}` | Title or body updated. |
 | `reprioritized` | `{priority}` | Priority changed. |
 | `status` | `{status}` | Dashboard drag-drop wrote a status directly (e.g. `todo → ready`). Carries the `run_id` of the run that was reclaimed when dragging off `running`; otherwise `run_id` is NULL. |

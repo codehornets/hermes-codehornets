@@ -14,6 +14,49 @@ The dashboard is the most comfortable place for **you** to watch the system. Age
 
 This tutorial uses the `default` board throughout. If you want multiple isolated queues (one per project / repo / domain), see [Boards (multi-project)](./kanban#boards-multi-project) in the overview — the same CLI / dashboard / worker flows apply per board, and workers physically cannot see tasks on other boards.
 
+### Optional: lock a project board to an audited agent team
+
+For a long-lived project, create one board and attach existing global profiles
+to explicit roles. Profiles stay under `~/.hermes/profiles/`; the board stores
+only names, policy, and version pins:
+
+```bash
+hermes kanban boards create auth-project \
+    --name "Auth project" \
+    --default-workdir "$HOME/work/auth-service"
+
+hermes kanban boards roster-add auth-project product-chief --role orchestrator
+hermes kanban boards roster-add auth-project backend-dev --role worker
+hermes kanban boards roster-add auth-project qa-dev --role worker
+hermes kanban boards roster-add auth-project independent-reviewer --role reviewer
+
+hermes kanban boards roster auth-project \
+    --strict --require-review --enforce-pins
+hermes kanban boards roster-verify auth-project
+```
+
+The corresponding filesystem remains easy to audit:
+
+```text
+~/.hermes/
+├── profiles/
+│   ├── backend-dev/
+│   ├── qa-dev/
+│   └── independent-reviewer/
+└── kanban/boards/auth-project/
+    ├── board.json       # roster + policy + version pins
+    ├── kanban.db        # tasks, runs, events, provenance
+    ├── workspaces/
+    └── logs/
+```
+
+With these policies enabled, an unlisted assignee cannot be created, assigned,
+claimed, or dispatched; implementation workers must request review instead of
+completing their own cards; and a changed profile definition stops dispatch
+until you inspect the drift. After an intentional profile update, rerun
+`roster-add` for that profile to accept a new pin. Existing boards remain
+permissive until you explicitly use `--strict`.
+
 Throughout the tutorial, **code blocks labelled `bash` are commands *you* run.** Code blocks labelled `# worker tool calls` are what the spawned worker's model emits as tool calls — shown here so you can see the loop end-to-end, not because you'd ever run them yourself.
 
 ## The board at a glance
@@ -22,7 +65,7 @@ Throughout the tutorial, **code blocks labelled `bash` are commands *you* run.**
 
 Six columns, left to right:
 
-- **Triage** — raw ideas. By default the dispatcher auto-runs the **decomposer** on tasks here: the built-in decomposer uses `auxiliary.kanban_decomposer`, reads your profile roster + descriptions, and produces a graph of child tasks routed to the best-fit specialists. The original task is held alive as the parent so its assignee (`kanban.orchestrator_profile`, or the active default profile when unset) wakes back up to judge completion when everything finishes. Flip the **Orchestration: Auto/Manual** pill at the top of the kanban page to switch modes. In Manual mode click **⚗ Decompose** on a card, or run `hermes kanban decompose <id>` / `/kanban decompose <id>`. For single tasks that don't need fan-out, **✨ Specify** does a one-shot spec rewrite (goal, approach, acceptance criteria) and promotes to `todo`. Configure the models under `auxiliary.kanban_decomposer` and `auxiliary.triage_specifier` in `config.yaml`. See [Auto vs Manual orchestration](./kanban#auto-vs-manual-orchestration) in the main Kanban guide.
+- **Triage** — raw ideas. By default the dispatcher auto-runs the **decomposer** on tasks here: the built-in decomposer uses `auxiliary.kanban_decomposer`, reads the board-eligible profile roster + descriptions, and produces a graph of child tasks routed to the best-fit specialists. The original task is held alive as the parent so its assignee (the board roster's orchestrator, then `kanban.orchestrator_profile`, then the active default profile) wakes back up to judge completion when everything finishes. Flip the **Orchestration: Auto/Manual** pill at the top of the kanban page to switch modes. In Manual mode click **⚗ Decompose** on a card, or run `hermes kanban decompose <id>` / `/kanban decompose <id>`. For single tasks that don't need fan-out, **✨ Specify** does a one-shot spec rewrite (goal, approach, acceptance criteria) and promotes to `todo`. Configure the models under `auxiliary.kanban_decomposer` and `auxiliary.triage_specifier` in `config.yaml`. See [Auto vs Manual orchestration](./kanban#auto-vs-manual-orchestration) in the main Kanban guide.
 - **Todo** — created but waiting on dependencies, or not yet assigned.
 - **Ready** — assigned and waiting for the dispatcher to claim.
 - **In progress** — a worker is actively running the task. With "Lanes by profile" on (the default), this column sub-groups by assignee so you can see at a glance what each worker is doing.
@@ -92,13 +135,14 @@ Click the completed schema task on the board and the drawer shows everything:
 
 ![Solo dev — completed schema task drawer](/img/kanban-tutorial/03-drawer-schema-task.png)
 
-The Run History section at the bottom is the key addition. One attempt: outcome `completed`, worker `@backend-dev`, duration, timestamp, and the handoff summary in full. The metadata blob (`changed_files`, `decisions`) is stored on the run too and surfaced to any downstream worker that reads this parent.
+The Run History section at the bottom is the key addition. One attempt: outcome `completed`, worker `@backend-dev`, duration, timestamp, and the handoff summary in full. The metadata blob (`changed_files`, `decisions`) is stored on the run too and surfaced to any downstream worker that reads this parent. Expand **Agent provenance** to see the exact Hermes commit, profile distribution and definition hash, resolved model/provider, and requested skill versions used for that attempt.
 
 You can inspect the same data from your terminal at any time — these commands are **you** peeking at the board, not the worker:
 
 ```bash
 hermes kanban show $SCHEMA
 hermes kanban runs $SCHEMA
+hermes kanban runs $SCHEMA --json | jq '.[0].provenance'
 # #  OUTCOME       PROFILE       ELAPSED  STARTED
 # 1  completed     backend-dev        0s  2026-04-27 19:34
 #     → users(id, email, pw_hash), sessions(id, user_id, jti, expires_at); refresh tokens ...
