@@ -1535,11 +1535,19 @@ interface GatewayDotProps {
   tooltipWarmRef: TooltipWarmRef;
 }
 
+type NavSection =
+  | "Work"
+  | "Agents"
+  | "Automation"
+  | "Integrations"
+  | "Administration";
+
 interface NavItem {
   icon: ComponentType<{ className?: string }>;
   label: string;
   labelKey?: string;
   path: string;
+  section?: NavSection;
 }
 
 interface SidebarIconWithTooltipProps {

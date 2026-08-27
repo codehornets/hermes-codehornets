@@ -8,12 +8,13 @@ ARGS ?=
 # then restore config discovery for the project operation itself.
 UV := env UV_NO_CONFIG=1 uvx --from "uv>=0.9.17,<1" env -u UV_NO_CONFIG uv
 
-.PHONY: setup help which dev installed shell-dev shell-installed run
+.PHONY: setup help which dashboard-build dev installed shell-dev shell-installed run
 
 help:
 	@printf '%s\n' \
 		'make setup             Build this checkout into the development venv' \
 		'make which             Show which Hermes the shell, dev venv, and managed install use' \
+		'make dashboard-build   Build the web dashboard production bundle' \
 		'make dev [ARGS="..."]  Run Hermes from this checkout' \
 		'make installed [ARGS="..."]  Run the separately installed Hermes' \
 		'make shell-dev         Open a temporary shell where hermes uses this checkout' \
@@ -31,6 +32,9 @@ setup:
 		"$(HERMES_HOME)/logs" "$(HERMES_HOME)/memories" "$(HERMES_HOME)/skills"
 	test -e "$(HERMES_HOME)/config.yaml" || cp cli-config.yaml.example "$(HERMES_HOME)/config.yaml"
 	touch "$(HERMES_HOME)/.env"
+
+dashboard-build:
+	npm run build --workspace web
 
 which:
 	@printf '%s\n' '=== Current shell resolution ==='; \
